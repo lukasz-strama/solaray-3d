@@ -3,6 +3,7 @@
 #include <rlgl.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #define RAYGUI_IMPLEMENTATION
 #pragma GCC diagnostic push
@@ -10,32 +11,59 @@
 #include <raygui.h>
 #pragma GCC diagnostic pop
 
-#define G 200.0f // Gravitational constant
-#define C_SPEED 1000.0f // Speed of light approximation
+#define G_REAL 6.67430e-11
+#define M_SUN 1.989e30
+#define M_EARTH 5.972e24
+#define AU 1.496e11
+#define C_SPEED_REAL 299792458.0
+
+// Use Real Constants directly
+#define G G_REAL
+#define C_SPEED C_SPEED_REAL
+
 #define MAX_BODIES 500
 #define TRAIL_LENGTH 200
-#define DISK_INNER_RADIUS 80.0f
-#define DISK_OUTER_RADIUS 600.0f
+// Disk radii in meters (approximate for solar system scale)
+#define DISK_INNER_RADIUS (0.3 * AU)
+#define DISK_OUTER_RADIUS (50.0 * AU)
 
 typedef struct {
-    Vector3 position;
-    Vector3 velocity;
-    float mass;
-    float radius;
+    double x;
+    double y;
+    double z;
+} DVector3;
+
+// Double precision math helpers
+DVector3 DVector3Add(DVector3 v1, DVector3 v2) { return (DVector3){ v1.x + v2.x, v1.y + v2.y, v1.z + v2.z }; }
+DVector3 DVector3Subtract(DVector3 v1, DVector3 v2) { return (DVector3){ v1.x - v2.x, v1.y - v2.y, v1.z - v2.z }; }
+DVector3 DVector3Scale(DVector3 v, double scale) { return (DVector3){ v.x * scale, v.y * scale, v.z * scale }; }
+double DVector3Length(DVector3 v) { return sqrt(v.x*v.x + v.y*v.y + v.z*v.z); }
+double DVector3Distance(DVector3 v1, DVector3 v2) { return DVector3Length(DVector3Subtract(v1, v2)); }
+double DVector3DotProduct(DVector3 v1, DVector3 v2) { return v1.x*v2.x + v1.y*v2.y + v1.z*v2.z; }
+DVector3 DVector3CrossProduct(DVector3 v1, DVector3 v2) { return (DVector3){ v1.y*v2.z - v1.z*v2.y, v1.z*v2.x - v1.x*v2.z, v1.x*v2.y - v1.y*v2.x }; }
+DVector3 DVector3Normalize(DVector3 v) { double len = DVector3Length(v); if (len == 0) return (DVector3){0}; return DVector3Scale(v, 1.0/len); }
+Vector3 ToVector3(DVector3 v) { return (Vector3){ (float)v.x, (float)v.y, (float)v.z }; }
+
+typedef struct {
+    DVector3 position;
+    DVector3 velocity;
+    DVector3 acceleration; // For Verlet integration
+    double mass;
+    double radius;
     Color color;
-    Vector3 trail[TRAIL_LENGTH];
+    DVector3 trail[TRAIL_LENGTH];
     int trailIndex;
     bool active;
 } Body;
 
 typedef struct {
-    Vector3 position;
-    Vector3 velocity;
+    DVector3 position;
+    DVector3 velocity;
 } State;
 
 typedef struct {
-    Vector3 dPosition; // velocity
-    Vector3 dVelocity; // acceleration
+    DVector3 dPosition; // velocity
+    DVector3 dVelocity; // acceleration
 } Derivative;
 
 typedef enum {
@@ -44,23 +72,31 @@ typedef enum {
     STATE_SETTINGS
 } AppState;
 
+typedef enum {
+    INTEGRATOR_RK4,
+    INTEGRATOR_VERLET
+} IntegratorType;
+
 typedef struct {
-    Camera3D camera;
-    float camDist;
+    Camera3D renderCamera; // Used for rendering only
+    DVector3 camPos;       // Real world position
+    DVector3 camTarget;    // Real world target position
+    double camDist;        // Real world distance from target
     Vector2 camAngle;
     int cameraTargetIndex;
 
-    float timeScale;
+    float timeScale; // Multiplier for real time (1.0 = 1 sec/sec, but we usually want faster)
     bool enableDrag;
     bool showLagrange;
     bool enableRoche;
     bool relativeView;
+    IntegratorType integrator;
 
     bool creationMode;
     bool isDragging;
-    Vector3 dragStartPos;
-    float newBodyMass;
-    float spawnHeight;
+    Vector3 dragStartPos; // Visual drag start (relative)
+    double newBodyMass;   // Real mass
+    double spawnHeight;   // Real height
     float spawnAngle;
 
     AppState currentState;
@@ -85,62 +121,62 @@ void getStates(Body bodies[], State states[]) {
 void calculateDerivatives(State states[], Derivative derivs[], Body bodies[], bool enableDrag) {
     for (int i = 0; i < MAX_BODIES; i++) {
         if (!bodies[i].active) {
-            derivs[i].dPosition = (Vector3){0,0,0};
-            derivs[i].dVelocity = (Vector3){0,0,0};
+            derivs[i].dPosition = (DVector3){0,0,0};
+            derivs[i].dVelocity = (DVector3){0,0,0};
             continue;
         }
 
         derivs[i].dPosition = states[i].velocity; // dr/dt = v
-        Vector3 force = { 0.0f, 0.0f, 0.0f };
+        DVector3 force = { 0.0, 0.0, 0.0 };
 
         // Drag Force (Gas/Dust) - Accretion Disk Model
         if (enableDrag && bodies[0].active) {
             // Assume Body 0 is the center (Sun)
-            float distToCenter = Vector3Distance(states[i].position, states[0].position);
+            double distToCenter = DVector3Distance(states[i].position, states[0].position);
 
             if (distToCenter > DISK_INNER_RADIUS && distToCenter < DISK_OUTER_RADIUS) {
                 // Density function: Higher density closer to center
-                float normalizedDist = (distToCenter - DISK_INNER_RADIUS) / (DISK_OUTER_RADIUS - DISK_INNER_RADIUS);
-                float density = 1.0f - normalizedDist;
-                if (density < 0.0f) density = 0.0f;
+                double normalizedDist = (distToCenter - DISK_INNER_RADIUS) / (DISK_OUTER_RADIUS - DISK_INNER_RADIUS);
+                double density = 1.0 - normalizedDist;
+                if (density < 0.0) density = 0.0;
 
-                float dragCoeff = 0.002f * density;
+                double dragCoeff = 0.002 * density;
 
                 // F_drag = -c * rho * v
-                Vector3 drag = Vector3Scale(states[i].velocity, -dragCoeff);
-                force = Vector3Add(force, drag);
+                DVector3 drag = DVector3Scale(states[i].velocity, -dragCoeff);
+                force = DVector3Add(force, drag);
             }
         }
 
         for (int j = 0; j < MAX_BODIES; j++) {
             if (i == j || !bodies[j].active) continue;
 
-            Vector3 direction = Vector3Subtract(states[j].position, states[i].position);
-            float distance = Vector3Length(direction);
+            DVector3 direction = DVector3Subtract(states[j].position, states[i].position);
+            double distance = DVector3Length(direction);
 
-            float minDist = bodies[i].radius + bodies[j].radius;
+            double minDist = bodies[i].radius + bodies[j].radius;
             if (distance < minDist) distance = minDist;
 
-            float forceMagnitude = (G * bodies[i].mass * bodies[j].mass) / (distance * distance);
+            double forceMagnitude = (G * bodies[i].mass * bodies[j].mass) / (distance * distance);
 
             // Relativistic correction (Precession)
-            Vector3 relVel = Vector3Subtract(states[j].velocity, states[i].velocity);
+            DVector3 relVel = DVector3Subtract(states[j].velocity, states[i].velocity);
             // h = |r x v|
-            Vector3 hVec = Vector3CrossProduct(direction, relVel);
-            float h = Vector3Length(hVec);
+            DVector3 hVec = DVector3CrossProduct(direction, relVel);
+            double h = DVector3Length(hVec);
 
-            float correction = (3.0f * h * h) / (C_SPEED * C_SPEED * distance * distance);
-            forceMagnitude *= (1.0f + correction);
+            double correction = (3.0 * h * h) / (C_SPEED * C_SPEED * distance * distance);
+            forceMagnitude *= (1.0 + correction);
 
-            Vector3 forceVec = Vector3Scale(Vector3Normalize(direction), forceMagnitude);
-            force = Vector3Add(force, forceVec);
+            DVector3 forceVec = DVector3Scale(DVector3Normalize(direction), forceMagnitude);
+            force = DVector3Add(force, forceVec);
         }
-        derivs[i].dVelocity = Vector3Scale(force, 1.0f / bodies[i].mass); // dv/dt = a
+        derivs[i].dVelocity = DVector3Scale(force, 1.0 / bodies[i].mass); // dv/dt = a
     }
 }
 
 // Runge-Kutta 4th Order Integration
-void integrateRK4(Body bodies[], float dt, bool enableDrag) {
+void integrateRK4(Body bodies[], double dt, bool enableDrag) {
     State initialStates[MAX_BODIES];
     getStates(bodies, initialStates);
 
@@ -152,22 +188,22 @@ void integrateRK4(Body bodies[], float dt, bool enableDrag) {
 
     // k2
     for(int i=0; i<MAX_BODIES; i++) {
-        tempStates[i].position = Vector3Add(initialStates[i].position, Vector3Scale(k1[i].dPosition, dt * 0.5f));
-        tempStates[i].velocity = Vector3Add(initialStates[i].velocity, Vector3Scale(k1[i].dVelocity, dt * 0.5f));
+        tempStates[i].position = DVector3Add(initialStates[i].position, DVector3Scale(k1[i].dPosition, dt * 0.5));
+        tempStates[i].velocity = DVector3Add(initialStates[i].velocity, DVector3Scale(k1[i].dVelocity, dt * 0.5));
     }
     calculateDerivatives(tempStates, k2, bodies, enableDrag);
 
     // k3
     for(int i=0; i<MAX_BODIES; i++) {
-        tempStates[i].position = Vector3Add(initialStates[i].position, Vector3Scale(k2[i].dPosition, dt * 0.5f));
-        tempStates[i].velocity = Vector3Add(initialStates[i].velocity, Vector3Scale(k2[i].dVelocity, dt * 0.5f));
+        tempStates[i].position = DVector3Add(initialStates[i].position, DVector3Scale(k2[i].dPosition, dt * 0.5));
+        tempStates[i].velocity = DVector3Add(initialStates[i].velocity, DVector3Scale(k2[i].dVelocity, dt * 0.5));
     }
     calculateDerivatives(tempStates, k3, bodies, enableDrag);
 
     // k4
     for(int i=0; i<MAX_BODIES; i++) {
-        tempStates[i].position = Vector3Add(initialStates[i].position, Vector3Scale(k3[i].dPosition, dt));
-        tempStates[i].velocity = Vector3Add(initialStates[i].velocity, Vector3Scale(k3[i].dVelocity, dt));
+        tempStates[i].position = DVector3Add(initialStates[i].position, DVector3Scale(k3[i].dPosition, dt));
+        tempStates[i].velocity = DVector3Add(initialStates[i].velocity, DVector3Scale(k3[i].dVelocity, dt));
     }
     calculateDerivatives(tempStates, k4, bodies, enableDrag);
 
@@ -176,11 +212,86 @@ void integrateRK4(Body bodies[], float dt, bool enableDrag) {
         if (!bodies[i].active) continue;
         if (i == 0) continue; // Sun is stationary
 
-        Vector3 dPos = Vector3Scale(Vector3Add(Vector3Add(k1[i].dPosition, Vector3Scale(k2[i].dPosition, 2.0f)), Vector3Add(Vector3Scale(k3[i].dPosition, 2.0f), k4[i].dPosition)), dt / 6.0f);
-        Vector3 dVel = Vector3Scale(Vector3Add(Vector3Add(k1[i].dVelocity, Vector3Scale(k2[i].dVelocity, 2.0f)), Vector3Add(Vector3Scale(k3[i].dVelocity, 2.0f), k4[i].dVelocity)), dt / 6.0f);
+        DVector3 dPos = DVector3Scale(DVector3Add(DVector3Add(k1[i].dPosition, DVector3Scale(k2[i].dPosition, 2.0)), DVector3Add(DVector3Scale(k3[i].dPosition, 2.0), k4[i].dPosition)), dt / 6.0);
+        DVector3 dVel = DVector3Scale(DVector3Add(DVector3Add(k1[i].dVelocity, DVector3Scale(k2[i].dVelocity, 2.0)), DVector3Add(DVector3Scale(k3[i].dVelocity, 2.0), k4[i].dVelocity)), dt / 6.0);
 
-        bodies[i].position = Vector3Add(bodies[i].position, dPos);
-        bodies[i].velocity = Vector3Add(bodies[i].velocity, dVel);
+        bodies[i].position = DVector3Add(bodies[i].position, dPos);
+        bodies[i].velocity = DVector3Add(bodies[i].velocity, dVel);
+    }
+}
+
+// Calculate accelerations for Verlet integration
+void calculateAccelerations(Body bodies[], bool enableDrag) {
+    for (int i = 0; i < MAX_BODIES; i++) {
+        if (!bodies[i].active) {
+            bodies[i].acceleration = (DVector3){0,0,0};
+            continue;
+        }
+
+        DVector3 force = { 0.0, 0.0, 0.0 };
+
+        // Drag Force (Gas/Dust) - Accretion Disk Model
+        if (enableDrag && bodies[0].active) {
+            double distToCenter = DVector3Distance(bodies[i].position, bodies[0].position);
+
+            if (distToCenter > DISK_INNER_RADIUS && distToCenter < DISK_OUTER_RADIUS) {
+                double normalizedDist = (distToCenter - DISK_INNER_RADIUS) / (DISK_OUTER_RADIUS - DISK_INNER_RADIUS);
+                double density = 1.0 - normalizedDist;
+                if (density < 0.0) density = 0.0;
+
+                double dragCoeff = 0.002 * density;
+                DVector3 drag = DVector3Scale(bodies[i].velocity, -dragCoeff);
+                force = DVector3Add(force, drag);
+            }
+        }
+
+        for (int j = 0; j < MAX_BODIES; j++) {
+            if (i == j || !bodies[j].active) continue;
+
+            DVector3 direction = DVector3Subtract(bodies[j].position, bodies[i].position);
+            double distance = DVector3Length(direction);
+
+            double minDist = bodies[i].radius + bodies[j].radius;
+            if (distance < minDist) distance = minDist;
+
+            double forceMagnitude = (G * bodies[i].mass * bodies[j].mass) / (distance * distance);
+
+            // Relativistic correction (Precession)
+            DVector3 relVel = DVector3Subtract(bodies[j].velocity, bodies[i].velocity);
+            DVector3 hVec = DVector3CrossProduct(direction, relVel);
+            double h = DVector3Length(hVec);
+
+            double correction = (3.0 * h * h) / (C_SPEED * C_SPEED * distance * distance);
+            forceMagnitude *= (1.0 + correction);
+
+            DVector3 forceVec = DVector3Scale(DVector3Normalize(direction), forceMagnitude);
+            force = DVector3Add(force, forceVec);
+        }
+        bodies[i].acceleration = DVector3Scale(force, 1.0 / bodies[i].mass);
+    }
+}
+
+// Velocity Verlet Integration (Symplectic, faster than RK4)
+void integrateVerlet(Body bodies[], double dt, bool enableDrag) {
+    // 1. First half-kick (Update Velocity using current Acceleration)
+    for (int i = 0; i < MAX_BODIES; i++) {
+        if (!bodies[i].active) continue;
+        bodies[i].velocity = DVector3Add(bodies[i].velocity, DVector3Scale(bodies[i].acceleration, dt * 0.5));
+    }
+
+    // 2. Drift (Update Position using new Velocity)
+    for (int i = 0; i < MAX_BODIES; i++) {
+        if (!bodies[i].active) continue;
+        bodies[i].position = DVector3Add(bodies[i].position, DVector3Scale(bodies[i].velocity, dt));
+    }
+
+    // 3. Recalculate Forces (Accelerations)
+    calculateAccelerations(bodies, enableDrag);
+
+    // 4. Second half-kick (Update Velocity using NEW Acceleration)
+    for (int i = 0; i < MAX_BODIES; i++) {
+        if (!bodies[i].active) continue;
+        bodies[i].velocity = DVector3Add(bodies[i].velocity, DVector3Scale(bodies[i].acceleration, dt * 0.5));
     }
 }
 
@@ -190,27 +301,27 @@ void handleCollisions(Body bodies[]) {
         for (int j = i + 1; j < MAX_BODIES; j++) {
             if (!bodies[j].active) continue;
 
-            if (CheckCollisionSpheres(bodies[i].position, bodies[i].radius, bodies[j].position, bodies[j].radius)) {
+            if (DVector3Distance(bodies[i].position, bodies[j].position) < (bodies[i].radius + bodies[j].radius)) {
                 // Merge j into i (Fusion)
                 Body *b1 = &bodies[i];
                 Body *b2 = &bodies[j];
 
-                Vector3 momentum1 = Vector3Scale(b1->velocity, b1->mass);
-                Vector3 momentum2 = Vector3Scale(b2->velocity, b2->mass);
-                Vector3 totalMomentum = Vector3Add(momentum1, momentum2);
-                float totalMass = b1->mass + b2->mass;
+                DVector3 momentum1 = DVector3Scale(b1->velocity, b1->mass);
+                DVector3 momentum2 = DVector3Scale(b2->velocity, b2->mass);
+                DVector3 totalMomentum = DVector3Add(momentum1, momentum2);
+                double totalMass = b1->mass + b2->mass;
 
                 if (i == 0) {
                     // Sun absorbs body, but stays stationary
                     b1->mass = totalMass;
-                    b1->radius = cbrtf(powf(b1->radius, 3.0f) + powf(b2->radius, 3.0f));
+                    b1->radius = cbrt(pow(b1->radius, 3.0) + pow(b2->radius, 3.0));
                 } else {
-                    b1->velocity = Vector3Scale(totalMomentum, 1.0f / totalMass);
+                    b1->velocity = DVector3Scale(totalMomentum, 1.0 / totalMass);
 
                     // Weighted position
-                    b1->position = Vector3Scale(Vector3Add(Vector3Scale(b1->position, b1->mass), Vector3Scale(b2->position, b2->mass)), 1.0f/totalMass);
+                    b1->position = DVector3Scale(DVector3Add(DVector3Scale(b1->position, b1->mass), DVector3Scale(b2->position, b2->mass)), 1.0/totalMass);
 
-                    b1->radius = cbrtf(powf(b1->radius, 3.0f) + powf(b2->radius, 3.0f));
+                    b1->radius = cbrt(pow(b1->radius, 3.0) + pow(b2->radius, 3.0));
                     b1->mass = totalMass;
                 }
 
@@ -224,9 +335,9 @@ void explodeBody(Body bodies[], int index) {
     bodies[index].active = false;
 
     int fragments = 8;
-    float newMass = bodies[index].mass / fragments;
-    float newRadius = bodies[index].radius / 2.0f;
-    if (newRadius < 2.0f) newRadius = 2.0f;
+    double newMass = bodies[index].mass / fragments;
+    double newRadius = bodies[index].radius / 2.0;
+    if (newRadius < 10000.0) newRadius = 10000.0; // Min fragment size 10km
 
     for (int k = 0; k < fragments; k++) {
         for (int j = 0; j < MAX_BODIES; j++) {
@@ -235,17 +346,17 @@ void explodeBody(Body bodies[], int index) {
                 bodies[j].mass = newMass;
                 bodies[j].radius = newRadius;
                 bodies[j].color = (Color){
-                    (unsigned char)fminf(255, bodies[index].color.r + GetRandomValue(-20, 20)),
-                    (unsigned char)fminf(255, bodies[index].color.g + GetRandomValue(-20, 20)),
-                    (unsigned char)fminf(255, bodies[index].color.b + GetRandomValue(-20, 20)),
+                    (unsigned char)fmin(255, bodies[index].color.r + GetRandomValue(-20, 20)),
+                    (unsigned char)fmin(255, bodies[index].color.g + GetRandomValue(-20, 20)),
+                    (unsigned char)fmin(255, bodies[index].color.b + GetRandomValue(-20, 20)),
                     255
                 };
 
-                Vector3 offset = { (float)GetRandomValue(-5, 5), (float)GetRandomValue(-5, 5), (float)GetRandomValue(-5, 5) };
-                bodies[j].position = Vector3Add(bodies[index].position, offset);
+                DVector3 offset = { (double)GetRandomValue(-5, 5) * newRadius, (double)GetRandomValue(-5, 5) * newRadius, (double)GetRandomValue(-5, 5) * newRadius };
+                bodies[j].position = DVector3Add(bodies[index].position, offset);
 
-                Vector3 velSpread = { (float)GetRandomValue(-20, 20) / 10.0f, (float)GetRandomValue(-20, 20) / 10.0f, (float)GetRandomValue(-20, 20) / 10.0f };
-                bodies[j].velocity = Vector3Add(bodies[index].velocity, velSpread);
+                DVector3 velSpread = { (double)GetRandomValue(-20, 20) * 100.0, (double)GetRandomValue(-20, 20) * 100.0, (double)GetRandomValue(-20, 20) * 100.0 };
+                bodies[j].velocity = DVector3Add(bodies[index].velocity, velSpread);
 
                 bodies[j].trailIndex = 0;
                 for(int t=0; t<TRAIL_LENGTH; t++) bodies[j].trail[t] = bodies[j].position;
@@ -261,14 +372,14 @@ void checkRocheLimit(Body bodies[]) {
     for (int i = 1; i < MAX_BODIES; i++) {
         if (!bodies[i].active) continue;
 
-        float dist = Vector3Distance(bodies[i].position, bodies[0].position);
+        double dist = DVector3Distance(bodies[i].position, bodies[0].position);
 
-        if (bodies[i].mass < 0.1f) continue;
+        if (bodies[i].mass < 1e20) continue; // Ignore small asteroids
 
-        float massRatio = bodies[0].mass / bodies[i].mass;
-        float rocheLimit = 1.26f * bodies[i].radius * cbrtf(massRatio);
+        double massRatio = bodies[0].mass / bodies[i].mass;
+        double rocheLimit = 1.26 * bodies[i].radius * cbrt(massRatio);
 
-        if (bodies[i].radius > 3.0f && dist < rocheLimit) {
+        if (bodies[i].radius > 100000.0 && dist < rocheLimit) {
             explodeBody(bodies, i);
         }
     }
@@ -276,11 +387,11 @@ void checkRocheLimit(Body bodies[]) {
 
 // Lagrange points are strictly defined for the restricted 3-body problem in a plane.
 // We will project to the orbital plane of the largest planet for visualization.
-void drawLagrangePoints(Body bodies[]) {
+void drawLagrangePoints(Body bodies[], DVector3 camPos) {
     if (!bodies[0].active) return;
 
     int heaviestIndex = -1;
-    float maxMass = 0.0f;
+    double maxMass = 0.0;
 
     for (int i = 1; i < MAX_BODIES; i++) {
         if (bodies[i].active && bodies[i].mass > maxMass) {
@@ -294,65 +405,65 @@ void drawLagrangePoints(Body bodies[]) {
     Body *m1 = &bodies[0];
     Body *m2 = &bodies[heaviestIndex];
 
-    Vector3 r1 = m1->position;
-    Vector3 r2 = m2->position;
-    Vector3 R_vec = Vector3Subtract(r2, r1);
-    float R = Vector3Length(R_vec);
-    Vector3 u = Vector3Scale(R_vec, 1.0f / R);
+    DVector3 r1 = m1->position;
+    DVector3 r2 = m2->position;
+    DVector3 R_vec = DVector3Subtract(r2, r1);
+    double R = DVector3Length(R_vec);
+    DVector3 u = DVector3Scale(R_vec, 1.0 / R);
 
-    float massRatio = m2->mass / m1->mass;
-    float hillRadius = R * cbrtf(massRatio / 3.0f);
+    double massRatio = m2->mass / m1->mass;
+    double hillRadius = R * cbrt(massRatio / 3.0);
 
-    Vector3 l1 = Vector3Subtract(r2, Vector3Scale(u, hillRadius));
-    Vector3 l2 = Vector3Add(r2, Vector3Scale(u, hillRadius));
+    DVector3 l1 = DVector3Subtract(r2, DVector3Scale(u, hillRadius));
+    DVector3 l2 = DVector3Add(r2, DVector3Scale(u, hillRadius));
 
-    float l3_dist = R * (1.0f + (5.0f/12.0f) * massRatio);
-    Vector3 l3 = Vector3Subtract(r1, Vector3Scale(u, l3_dist));
+    double l3_dist = R * (1.0 + (5.0/12.0) * massRatio);
+    DVector3 l3 = DVector3Subtract(r1, DVector3Scale(u, l3_dist));
 
     // For L4/L5 we need a vector perpendicular to R_vec in the orbital plane.
     // We can use the velocity of m2 relative to m1 to find the orbital plane normal.
-    Vector3 vRel = Vector3Subtract(m2->velocity, m1->velocity);
-    Vector3 orbitalNormal = Vector3Normalize(Vector3CrossProduct(R_vec, vRel));
+    DVector3 vRel = DVector3Subtract(m2->velocity, m1->velocity);
+    DVector3 orbitalNormal = DVector3Normalize(DVector3CrossProduct(R_vec, vRel));
     // If velocity is parallel to position (falling straight in), this fails, but that's rare for planets.
     // Perpendicular vector in plane:
-    Vector3 perp = Vector3Normalize(Vector3CrossProduct(orbitalNormal, u));
+    DVector3 perp = DVector3Normalize(DVector3CrossProduct(orbitalNormal, u));
 
     // L4/L5 form equilateral triangles.
     // Position is R/2 along u, and sqrt(3)/2 * R along perp.
-    float h_tri = 0.8660254f * R; // sin(60) * R
+    double h_tri = 0.8660254 * R; // sin(60) * R
 
-    Vector3 l4 = Vector3Add(Vector3Add(r1, Vector3Scale(u, R * 0.5f)), Vector3Scale(perp, h_tri));
-    Vector3 l5 = Vector3Add(Vector3Add(r1, Vector3Scale(u, R * 0.5f)), Vector3Scale(perp, -h_tri));
+    DVector3 l4 = DVector3Add(DVector3Add(r1, DVector3Scale(u, R * 0.5)), DVector3Scale(perp, h_tri));
+    DVector3 l5 = DVector3Add(DVector3Add(r1, DVector3Scale(u, R * 0.5)), DVector3Scale(perp, -h_tri));
 
     Color lColor = VIOLET;
-    float lRadius = 5.0f;
+    float lRadius = 5.0f; // This should probably be scaled too, but let's keep it fixed for now or use visual size logic
 
-    DrawSphere(l1, lRadius, lColor);
-    DrawSphere(l2, lRadius, lColor);
-    DrawSphere(l3, lRadius, lColor);
-    DrawSphere(l4, lRadius, lColor);
-    DrawSphere(l5, lRadius, lColor);
+    DrawSphere(ToVector3(DVector3Subtract(l1, camPos)), lRadius, lColor);
+    DrawSphere(ToVector3(DVector3Subtract(l2, camPos)), lRadius, lColor);
+    DrawSphere(ToVector3(DVector3Subtract(l3, camPos)), lRadius, lColor);
+    DrawSphere(ToVector3(DVector3Subtract(l4, camPos)), lRadius, lColor);
+    DrawSphere(ToVector3(DVector3Subtract(l5, camPos)), lRadius, lColor);
 }
 
 // Helper to create a body in a stable circular orbit around a parent
-Body createOrbitingBody(Body parent, float orbitRadius, float angleDeg, float mass, float radius, Color color) {
-    float theta = angleDeg * DEG2RAD;
+Body createOrbitingBody(Body parent, double orbitRadius, double angleDeg, double mass, double radius, Color color) {
+    double theta = angleDeg * DEG2RAD;
 
     // Position offset
-    float dx = orbitRadius * cosf(theta);
-    float dz = orbitRadius * sinf(theta);
+    double dx = orbitRadius * cos(theta);
+    double dz = orbitRadius * sin(theta);
 
-    Vector3 position = Vector3Add(parent.position, (Vector3){ dx, 0.0f, dz });
+    DVector3 position = DVector3Add(parent.position, (DVector3){ dx, 0.0, dz });
 
     // Orbital velocity (circular) v = sqrt(GM / r)
-    float vMag = sqrtf((G * parent.mass) / orbitRadius);
+    double vMag = sqrt((G * parent.mass) / orbitRadius);
 
     // Velocity vector (tangent to circle)
     // If pos is (cos, sin), vel is (-sin, cos) for counter-clockwise orbit
-    float vx = -vMag * sinf(theta);
-    float vz = vMag * cosf(theta);
+    double vx = -vMag * sin(theta);
+    double vz = vMag * cos(theta);
 
-    Vector3 velocity = Vector3Add(parent.velocity, (Vector3){ vx, 0.0f, vz });
+    DVector3 velocity = DVector3Add(parent.velocity, (DVector3){ vx, 0.0, vz });
 
     Body b = {0};
     b.position = position;
@@ -372,25 +483,25 @@ void initBodies(Body bodies[]) {
 
     // Sun
     bodies[0] = (Body){
-        .position = { 0.0f, 0.0f, 0.0f },
-        .velocity = { 0.0f, 0.0f, 0.0f },
-        .mass = 10000.0f,
-        .radius = 40.0f,
+        .position = { 0.0, 0.0, 0.0 },
+        .velocity = { 0.0, 0.0, 0.0 },
+        .mass = M_SUN,
+        .radius = 6.9634e8, // Sun Radius
         .color = YELLOW,
         .active = true
     };
 
-    // Planet 1
-    bodies[1] = createOrbitingBody(bodies[0], 200.0f, 0.0f, 10.0f, 10.0f, BLUE);
+    // Planet 1 (Mercury-like)
+    bodies[1] = createOrbitingBody(bodies[0], 0.39 * AU, 0.0, 3.301e23, 2.4397e6, BLUE);
 
-    // Planet 2
-    bodies[2] = createOrbitingBody(bodies[0], 500.0f, 0.0f, 8.0f, 8.0f, RED);
+    // Planet 2 (Earth-like)
+    bodies[2] = createOrbitingBody(bodies[0], 1.0 * AU, 0.0, M_EARTH, 6.371e6, RED);
 
-    // Planet 3 (Orange)
-    bodies[3] = createOrbitingBody(bodies[0], 850.0f, 0.0f, 500.0f, 20.0f, ORANGE);
+    // Planet 3 (Jupiter-like)
+    bodies[3] = createOrbitingBody(bodies[0], 5.2 * AU, 0.0, 1.898e27, 6.9911e7, ORANGE);
 
-    // Moon of Planet 3
-    bodies[4] = createOrbitingBody(bodies[3], 45.0f, 0.0f, 1.0f, 4.0f, WHITE);
+    // Moon of Planet 3 (Europa-like)
+    bodies[4] = createOrbitingBody(bodies[3], 6.71e8, 0.0, 4.8e22, 1.56e6, WHITE);
 
     for (int i = 0; i < MAX_BODIES; i++) {
         for (int j = 0; j < TRAIL_LENGTH; j++) {
@@ -400,11 +511,13 @@ void initBodies(Body bodies[]) {
     }
 }
 
-void drawAccretionDisk(Vector3 center) {
+void drawAccretionDisk(DVector3 center, DVector3 camPos) {
     float inner = DISK_INNER_RADIUS;
     float outer = DISK_OUTER_RADIUS;
     int slices = 60;
     Color c = Fade(BLUE, 0.15f);
+
+    DVector3 relCenter = DVector3Subtract(center, camPos);
 
     rlBegin(RL_TRIANGLES);
     rlColor4ub(c.r, c.g, c.b, c.a);
@@ -420,107 +533,108 @@ void drawAccretionDisk(Vector3 center) {
 
         // Quad formed by 2 triangles
         // V1(in,1) -> V2(out,1) -> V3(in,2)
-        rlVertex3f(center.x + inner*cos1, center.y, center.z + inner*sin1);
-        rlVertex3f(center.x + outer*cos1, center.y, center.z + outer*sin1);
-        rlVertex3f(center.x + inner*cos2, center.y, center.z + inner*sin2);
+        rlVertex3f(relCenter.x + inner*cos1, relCenter.y, relCenter.z + inner*sin1);
+        rlVertex3f(relCenter.x + outer*cos1, relCenter.y, relCenter.z + outer*sin1);
+        rlVertex3f(relCenter.x + inner*cos2, relCenter.y, relCenter.z + inner*sin2);
 
         // V2(out,1) -> V4(out,2) -> V3(in,2)
-        rlVertex3f(center.x + outer*cos1, center.y, center.z + outer*sin1);
-        rlVertex3f(center.x + outer*cos2, center.y, center.z + outer*sin2);
-        rlVertex3f(center.x + inner*cos2, center.y, center.z + inner*sin2);
+        rlVertex3f(relCenter.x + outer*cos1, relCenter.y, relCenter.z + outer*sin1);
+        rlVertex3f(relCenter.x + outer*cos2, relCenter.y, relCenter.z + outer*sin2);
+        rlVertex3f(relCenter.x + inner*cos2, relCenter.y, relCenter.z + inner*sin2);
     }
     rlEnd();
 }
 
-void drawOrbit(Body bodies[], int targetIndex, int centerIndex) {
+void drawOrbit(Body bodies[], int targetIndex, int centerIndex, DVector3 camPos) {
     if (!bodies[centerIndex].active || !bodies[targetIndex].active || targetIndex == centerIndex) return;
 
     Body *center = &bodies[centerIndex];
     Body *planet = &bodies[targetIndex];
 
-    Vector3 rVec = Vector3Subtract(planet->position, center->position);
-    Vector3 vVec = Vector3Subtract(planet->velocity, center->velocity);
+    DVector3 rVec = DVector3Subtract(planet->position, center->position);
+    DVector3 vVec = DVector3Subtract(planet->velocity, center->velocity);
 
-    float r = Vector3Length(rVec);
-    float v = Vector3Length(vVec);
-    float mu = G * (center->mass + planet->mass);
+    double r = DVector3Length(rVec);
+    double v = DVector3Length(vVec);
+    double mu = G * (center->mass + planet->mass);
 
     // Specific angular momentum h = r x v
-    Vector3 hVec = Vector3CrossProduct(rVec, vVec);
-    float h = Vector3Length(hVec);
-    if (h < 0.1f) return;
+    DVector3 hVec = DVector3CrossProduct(rVec, vVec);
+    double h = DVector3Length(hVec);
+    if (h < 0.1) return;
 
     // Eccentricity vector e = (v x h) / mu - r / |r|
-    Vector3 vxh = Vector3CrossProduct(vVec, hVec);
-    Vector3 eVec = Vector3Subtract(Vector3Scale(vxh, 1.0f/mu), Vector3Scale(rVec, 1.0f/r));
-    float e = Vector3Length(eVec);
+    DVector3 vxh = DVector3CrossProduct(vVec, hVec);
+    DVector3 eVec = DVector3Subtract(DVector3Scale(vxh, 1.0/mu), DVector3Scale(rVec, 1.0/r));
+    double e = DVector3Length(eVec);
 
     // Semi-major axis a = 1 / (2/r - v^2/mu)
-    float energy = v*v/2.0f - mu/r;
-    if (fabs(energy) < 0.0001f) return;
-    float a = -mu / (2.0f * energy);
+    double energy = v*v/2.0 - mu/r;
+    if (fabs(energy) < 0.0001) return;
+    double a = -mu / (2.0 * energy);
 
-    if (e >= 1.0f || a < 0) return; // Hyperbolic/Parabolic
+    if (e >= 1.0 || a < 0) return; // Hyperbolic/Parabolic
 
     // Basis vectors for orbital plane
-    Vector3 n = Vector3Normalize(hVec); // Normal to plane
-    Vector3 p; // Periapsis direction
-    if (e > 0.001f) {
-        p = Vector3Normalize(eVec);
+    DVector3 n = DVector3Normalize(hVec); // Normal to plane
+    DVector3 p; // Periapsis direction
+    if (e > 0.001) {
+        p = DVector3Normalize(eVec);
     } else {
-        if (fabs(n.y) < 0.9f) p = Vector3Normalize(Vector3CrossProduct((Vector3){0,1,0}, n));
-        else p = Vector3Normalize(Vector3CrossProduct((Vector3){1,0,0}, n));
+        if (fabs(n.y) < 0.9) p = DVector3Normalize(DVector3CrossProduct((DVector3){0,1,0}, n));
+        else p = DVector3Normalize(DVector3CrossProduct((DVector3){1,0,0}, n));
     }
-    Vector3 q = Vector3CrossProduct(n, p);
+    DVector3 q = DVector3CrossProduct(n, p);
 
     // Draw Orbit Path
     rlBegin(RL_LINES);
     rlColor4ub(255, 255, 255, 60);
 
-    int segments = 100;
-    Vector3 prevPos = {0};
+    int segments = 360;
+    DVector3 prevPos = {0};
     bool first = true;
 
     for (int i = 0; i <= segments; i++) {
-        float theta = (float)i / segments * 2.0f * PI;
-        float radius = a * (1.0f - e*e) / (1.0f + e * cosf(theta));
+        double theta = (double)i / segments * 2.0 * PI;
+        double radius = a * (1.0 - e*e) / (1.0 + e * cos(theta));
 
-        Vector3 posInPlane = Vector3Add(Vector3Scale(p, radius * cosf(theta)), Vector3Scale(q, radius * sinf(theta)));
-        Vector3 worldPos = Vector3Add(center->position, posInPlane);
+        DVector3 posInPlane = DVector3Add(DVector3Scale(p, radius * cos(theta)), DVector3Scale(q, radius * sin(theta)));
+        DVector3 worldPos = DVector3Add(center->position, posInPlane);
+        DVector3 relPos = DVector3Subtract(worldPos, camPos);
 
         if (!first) {
             rlVertex3f(prevPos.x, prevPos.y, prevPos.z);
-            rlVertex3f(worldPos.x, worldPos.y, worldPos.z);
+            rlVertex3f(relPos.x, relPos.y, relPos.z);
         }
-        prevPos = worldPos;
+        prevPos = relPos;
         first = false;
     }
     rlEnd();
 
     // Draw Periapsis (Green) and Apoapsis (Red)
-    float r_peri = a * (1.0f - e);
-    float r_apo = a * (1.0f + e);
+    double r_peri = a * (1.0 - e);
+    double r_apo = a * (1.0 + e);
 
-    Vector3 posPeri = Vector3Add(center->position, Vector3Scale(p, r_peri));
-    Vector3 posApo = Vector3Add(center->position, Vector3Scale(p, -r_apo));
+    DVector3 posPeri = DVector3Add(center->position, DVector3Scale(p, r_peri));
+    DVector3 posApo = DVector3Add(center->position, DVector3Scale(p, -r_apo));
 
-    DrawSphere(posPeri, 3.0f, GREEN);
-    DrawSphere(posApo, 3.0f, RED);
+    DrawSphere(ToVector3(DVector3Subtract(posPeri, camPos)), 3.0f, GREEN);
+    DrawSphere(ToVector3(DVector3Subtract(posApo, camPos)), 3.0f, RED);
 }
 
 int findParentBody(Body bodies[], int subjectIndex) {
     if (subjectIndex == 0) return -1;
 
     int bestParent = 0;
-    float maxForce = -1.0f;
+    double maxForce = -1.0;
 
     for (int i = 0; i < MAX_BODIES; i++) {
         if (i == subjectIndex || !bodies[i].active) continue;
 
-        float dist = Vector3Distance(bodies[i].position, bodies[subjectIndex].position);
-        if (dist < 1.0f) continue;
+        double dist = DVector3Distance(bodies[i].position, bodies[subjectIndex].position);
+        if (dist < 1.0) continue;
 
-        float force = bodies[i].mass / (dist * dist);
+        double force = bodies[i].mass / (dist * dist);
 
         if (force > maxForce) {
             maxForce = force;
@@ -540,62 +654,62 @@ void drawOrbitEditor(Body bodies[], int targetIndex, int screenWidth, int screen
     Body *p = &bodies[parentIndex];
 
     // Calculate relative state
-    Vector3 relPos = Vector3Subtract(b->position, p->position);
-    Vector3 relVel = Vector3Subtract(b->velocity, p->velocity);
+    DVector3 relPos = DVector3Subtract(b->position, p->position);
+    DVector3 relVel = DVector3Subtract(b->velocity, p->velocity);
 
-    float dist = Vector3Length(relPos);
-    float speed = Vector3Length(relVel);
-    float mu = G * (p->mass + b->mass);
+    double dist = DVector3Length(relPos);
+    double speed = DVector3Length(relVel);
+    double mu = G * (p->mass + b->mass);
 
     // Calculate orbital elements
-    Vector3 hVec = Vector3CrossProduct(relPos, relVel);
-    float h = Vector3Length(hVec);
-    Vector3 n = Vector3Scale(hVec, 1.0f/h);
+    DVector3 hVec = DVector3CrossProduct(relPos, relVel);
+    double h = DVector3Length(hVec);
+    DVector3 n = DVector3Scale(hVec, 1.0/h);
 
-    Vector3 vxh = Vector3CrossProduct(relVel, hVec);
-    Vector3 eVec = Vector3Subtract(Vector3Scale(vxh, 1.0f/mu), Vector3Scale(relPos, 1.0f/dist));
-    float e = Vector3Length(eVec);
+    DVector3 vxh = DVector3CrossProduct(relVel, hVec);
+    DVector3 eVec = DVector3Subtract(DVector3Scale(vxh, 1.0/mu), DVector3Scale(relPos, 1.0/dist));
+    double e = DVector3Length(eVec);
 
     // Handle circular orbits (e ~ 0)
-    Vector3 eDir;
-    if (e < 1e-4f) {
-        e = 0.0f;
-        eDir = Vector3Normalize(relPos);
+    DVector3 eDir;
+    if (e < 1e-4) {
+        e = 0.0;
+        eDir = DVector3Normalize(relPos);
     } else {
-        eDir = Vector3Normalize(eVec);
+        eDir = DVector3Normalize(eVec);
     }
 
-    Vector3 qDir = Vector3CrossProduct(n, eDir);
+    DVector3 qDir = DVector3CrossProduct(n, eDir);
 
-    float energy = speed*speed/2.0f - mu/dist;
-    float a = -mu / (2.0f * energy);
+    double energy = speed*speed/2.0 - mu/dist;
+    double a = -mu / (2.0 * energy);
 
     // True Anomaly nu
-    float nu = atan2f(Vector3DotProduct(relPos, qDir), Vector3DotProduct(relPos, eDir));
+    double nu = atan2(DVector3DotProduct(relPos, qDir), DVector3DotProduct(relPos, eDir));
 
     // Calculate Angle (Argument of Periapsis relative to reference)
-    Vector3 worldUp = {0, 1, 0};
-    if (fabsf(n.y) > 0.95f) worldUp = (Vector3){1, 0, 0};
-    Vector3 u = Vector3Normalize(Vector3CrossProduct(worldUp, n));
-    Vector3 v = Vector3CrossProduct(n, u);
-    float angle = atan2f(Vector3DotProduct(eDir, v), Vector3DotProduct(eDir, u));
+    DVector3 worldUp = {0, 1, 0};
+    if (fabs(n.y) > 0.95) worldUp = (DVector3){1, 0, 0};
+    DVector3 u = DVector3Normalize(DVector3CrossProduct(worldUp, n));
+    DVector3 v = DVector3CrossProduct(n, u);
+    double angle = atan2(DVector3DotProduct(eDir, v), DVector3DotProduct(eDir, u));
     if (angle < 0) angle += 2*PI;
 
     // Calculate Inclination
-    Vector3 refNormal = {0, 1, 0};
-    float inclination = acosf(Vector3DotProduct(n, refNormal));
-    Vector3 nodeVec = Vector3CrossProduct(refNormal, n);
-    if (Vector3Length(nodeVec) < 0.001f) nodeVec = (Vector3){1, 0, 0};
-    nodeVec = Vector3Normalize(nodeVec);
+    DVector3 refNormal = {0, 1, 0};
+    double inclination = acos(DVector3DotProduct(n, refNormal));
+    DVector3 nodeVec = DVector3CrossProduct(refNormal, n);
+    if (DVector3Length(nodeVec) < 0.001) nodeVec = (DVector3){1, 0, 0};
+    nodeVec = DVector3Normalize(nodeVec);
 
     // Derived parameters
-    float r_peri = a * (1.0f - e);
-    float r_apo = a * (1.0f + e);
-    float period = 2.0f * PI * sqrtf(powf(a, 3.0f) / mu);
+    double r_peri = a * (1.0 - e);
+    double r_apo = a * (1.0 + e);
+    double period = 2.0 * PI * sqrt(pow(a, 3.0) / mu);
 
     // UI Layout
-    int uiWidth = 240;
-    int uiHeight = 360;
+    int uiWidth = 280;
+    int uiHeight = 420;
     int uiX = screenWidth - uiWidth - 10;
     int uiY = screenHeight - uiHeight - 10;
     Rectangle uiRect = { uiX, uiY, uiWidth, uiHeight };
@@ -606,147 +720,205 @@ void drawOrbitEditor(Body bodies[], int targetIndex, int screenWidth, int screen
 
     int startX = uiX + 10;
     int startY = uiY + 30;
+    int controlWidth = 140;
+    int labelWidth = 110;
+
+    // Static state for UI
+    static int unitSelection = 2; // 0: m, 1: km, 2: AU
+    static bool unitEditMode = false;
+    
+    static bool editEcc = false;
+    static bool editSemi = false;
+    static bool editPeri = false;
+    static bool editApo = false;
+    static bool editRot = false;
+    static bool editInc = false;
+
+    static char textEcc[64] = "";
+    static char textSemi[64] = "";
+    static char textPeri[64] = "";
+    static char textApo[64] = "";
+    static char textRot[64] = "";
+    static char textInc[64] = "";
+
+    static int lastTarget = -1;
+    if (lastTarget != targetIndex) {
+        lastTarget = targetIndex;
+        editEcc = false; editSemi = false; editPeri = false; 
+        editApo = false; editRot = false; editInc = false;
+        unitEditMode = false;
+    }
+
+    double unitScale = 1.0;
+    const char* unitLabel = "m";
+    if (unitSelection == 1) { unitScale = 1000.0; unitLabel = "km"; }
+    else if (unitSelection == 2) { unitScale = AU; unitLabel = "AU"; }
 
     // Info
     GuiLabel((Rectangle){startX, startY, 260, 20}, TextFormat("Period: %.1f s", period));
-    startY += 20;
+    startY += 30;
+
+    // Unit Selector
+    Rectangle dropdownRect = {startX + 60, startY, 120, 20};
+    GuiLabel((Rectangle){startX, startY, 50, 20}, "Units:");
+    startY += 40;
 
     // Helper to apply changes
-    float new_a = a;
-    float new_e = e;
-    float new_angle = angle;
-    float new_inclination = inclination;
+    double new_a = a;
+    double new_e = e;
+    double new_angle = angle;
+    double new_inclination = inclination;
     bool changed = false;
 
     // 1. Eccentricity
-    GuiLabel((Rectangle){startX, startY, 260, 20}, TextFormat("Eccentricity: %.3f", e));
-    startY += 20;
-    float temp_e = new_e;
-    GuiSlider((Rectangle){startX, startY, 200, 20}, NULL, NULL, &temp_e, 0.0f, 0.95f);
-    if (temp_e != new_e) { new_e = temp_e; changed = true; }
+    GuiLabel((Rectangle){startX, startY, labelWidth, 20}, "Eccentricity:");
+    if (!editEcc) snprintf(textEcc, 64, "%.5f", e);
+    if (GuiTextBox((Rectangle){startX + labelWidth, startY, controlWidth, 20}, textEcc, 64, editEcc)) {
+        editEcc = !editEcc;
+        if (!editEcc) {
+            new_e = atof(textEcc);
+            if (new_e < 0) new_e = 0;
+            if (new_e >= 0.99) new_e = 0.99;
+            changed = true;
+        }
+    }
     startY += 30;
 
     // 2. Semi-major Axis
-    GuiLabel((Rectangle){startX, startY, 260, 20}, TextFormat("Semi-major Axis: %.1f", a));
-    startY += 20;
-    float temp_a = new_a;
-    GuiSlider((Rectangle){startX, startY, 200, 20}, NULL, NULL, &temp_a, 20.0f, 1000.0f);
-    if (temp_a != new_a) { new_a = temp_a; changed = true; }
+    GuiLabel((Rectangle){startX, startY, labelWidth, 20}, TextFormat("Semi-major (%s):", unitLabel));
+    if (!editSemi) snprintf(textSemi, 64, "%.4f", a / unitScale);
+    if (GuiTextBox((Rectangle){startX + labelWidth, startY, controlWidth, 20}, textSemi, 64, editSemi)) {
+        editSemi = !editSemi;
+        if (!editSemi) {
+            new_a = atof(textSemi) * unitScale;
+            if (new_a < 1000.0) new_a = 1000.0;
+            changed = true;
+        }
+    }
     startY += 30;
 
     // 3. Periapsis
-    GuiLabel((Rectangle){startX, startY, 260, 20}, TextFormat("Periapsis: %.1f", r_peri));
-    startY += 20;
-    float new_p = r_peri;
-    float temp_p = new_p;
-    GuiSlider((Rectangle){startX, startY, 200, 20}, NULL, NULL, &temp_p, 10.0f, 1000.0f);
-    if (temp_p != new_p) {
-        new_p = temp_p;
-        if (new_p >= r_apo) new_p = r_apo - 1.0f; // Clamp
-        new_a = (new_p + r_apo) / 2.0f;
-        new_e = (r_apo - new_p) / (r_apo + new_p);
-        changed = true;
+    GuiLabel((Rectangle){startX, startY, labelWidth, 20}, TextFormat("Periapsis (%s):", unitLabel));
+    if (!editPeri) snprintf(textPeri, 64, "%.4f", r_peri / unitScale);
+    if (GuiTextBox((Rectangle){startX + labelWidth, startY, controlWidth, 20}, textPeri, 64, editPeri)) {
+        editPeri = !editPeri;
+        if (!editPeri) {
+            double new_p = atof(textPeri) * unitScale;
+            if (new_p >= r_apo) new_p = r_apo - 1000.0;
+            new_a = (new_p + r_apo) / 2.0;
+            new_e = (r_apo - new_p) / (r_apo + new_p);
+            changed = true;
+        }
     }
     startY += 30;
 
     // 4. Apoapsis
-    GuiLabel((Rectangle){startX, startY, 260, 20}, TextFormat("Apoapsis: %.1f", r_apo));
-    startY += 20;
-    float new_ap = r_apo;
-    float temp_ap = new_ap;
-    GuiSlider((Rectangle){startX, startY, 200, 20}, NULL, NULL, &temp_ap, 10.0f, 1000.0f);
-    if (temp_ap != new_ap) {
-        new_ap = temp_ap;
-        if (new_ap <= r_peri) new_ap = r_peri + 1.0f; // Clamp
-        new_a = (r_peri + new_ap) / 2.0f;
-        new_e = (new_ap - r_peri) / (new_ap + r_peri);
-        changed = true;
+    GuiLabel((Rectangle){startX, startY, labelWidth, 20}, TextFormat("Apoapsis (%s):", unitLabel));
+    if (!editApo) snprintf(textApo, 64, "%.4f", r_apo / unitScale);
+    if (GuiTextBox((Rectangle){startX + labelWidth, startY, controlWidth, 20}, textApo, 64, editApo)) {
+        editApo = !editApo;
+        if (!editApo) {
+            double new_ap = atof(textApo) * unitScale;
+            if (new_ap <= r_peri) new_ap = r_peri + 1000.0;
+            new_a = (r_peri + new_ap) / 2.0;
+            new_e = (new_ap - r_peri) / (new_ap + r_peri);
+            changed = true;
+        }
     }
     startY += 30;
 
-    // 5. Rotation (Arg. Periapsis)
-    GuiLabel((Rectangle){startX, startY, 260, 20}, TextFormat("Rotation: %.0f deg", angle * RAD2DEG));
-    startY += 20;
-    float angleDeg = angle * RAD2DEG;
-    float temp_angleDeg = angleDeg;
-    GuiSlider((Rectangle){startX, startY, 200, 20}, NULL, NULL, &temp_angleDeg, 0.0f, 360.0f);
-    if (temp_angleDeg != angleDeg) {
-        new_angle = temp_angleDeg * DEG2RAD;
-        changed = true;
+    // 5. Rotation
+    GuiLabel((Rectangle){startX, startY, labelWidth, 20}, "Rotation (deg):");
+    if (!editRot) snprintf(textRot, 64, "%.2f", angle * RAD2DEG);
+    if (GuiTextBox((Rectangle){startX + labelWidth, startY, controlWidth, 20}, textRot, 64, editRot)) {
+        editRot = !editRot;
+        if (!editRot) {
+            new_angle = atof(textRot) * DEG2RAD;
+            changed = true;
+        }
     }
     startY += 30;
 
     // 6. Inclination
-    GuiLabel((Rectangle){startX, startY, 260, 20}, TextFormat("Inclination: %.0f deg", inclination * RAD2DEG));
-    startY += 20;
-    float incDeg = inclination * RAD2DEG;
-    float temp_incDeg = incDeg;
-    GuiSlider((Rectangle){startX, startY, 200, 20}, NULL, NULL, &temp_incDeg, 0.0f, 180.0f);
-    if (temp_incDeg != incDeg) {
-        new_inclination = temp_incDeg * DEG2RAD;
-        changed = true;
+    GuiLabel((Rectangle){startX, startY, labelWidth, 20}, "Inclination (deg):");
+    if (!editInc) snprintf(textInc, 64, "%.2f", inclination * RAD2DEG);
+    if (GuiTextBox((Rectangle){startX + labelWidth, startY, controlWidth, 20}, textInc, 64, editInc)) {
+        editInc = !editInc;
+        if (!editInc) {
+            new_inclination = atof(textInc) * DEG2RAD;
+            changed = true;
+        }
     }
     startY += 30;
 
+    // Draw Dropdown last to be on top
+    if (GuiDropdownBox(dropdownRect, "Meters;Kilometers;AU", &unitSelection, unitEditMode)) {
+        unitEditMode = !unitEditMode;
+    }
+
     if (changed) {
         // Reconstruct vectors
-        Vector3 new_eDir = Vector3Add(Vector3Scale(u, cosf(new_angle)), Vector3Scale(v, sinf(new_angle)));
-        Vector3 new_qDir = Vector3CrossProduct(n, new_eDir);
+        DVector3 new_eDir = DVector3Add(DVector3Scale(u, cos(new_angle)), DVector3Scale(v, sin(new_angle)));
+        DVector3 new_qDir = DVector3CrossProduct(n, new_eDir);
 
-        float slr = new_a * (1.0f - new_e * new_e);
-        float new_r = slr / (1.0f + new_e * cosf(nu));
+        double slr = new_a * (1.0 - new_e * new_e);
+        double new_r = slr / (1.0 + new_e * cos(nu));
 
-        float v_radial = sqrtf(mu/slr) * new_e * sinf(nu);
-        float v_tangential = sqrtf(mu/slr) * (1.0f + new_e * cosf(nu));
+        double v_radial = sqrt(mu/slr) * new_e * sin(nu);
+        double v_tangential = sqrt(mu/slr) * (1.0 + new_e * cos(nu));
 
-        Vector3 r_hat = Vector3Add(Vector3Scale(new_eDir, cosf(nu)), Vector3Scale(new_qDir, sinf(nu)));
-        Vector3 t_hat = Vector3CrossProduct(n, r_hat);
+        DVector3 r_hat = DVector3Add(DVector3Scale(new_eDir, cos(nu)), DVector3Scale(new_qDir, sin(nu)));
+        DVector3 t_hat = DVector3CrossProduct(n, r_hat);
 
-        Vector3 pos = Vector3Scale(r_hat, new_r);
-        Vector3 vel = Vector3Add(Vector3Scale(r_hat, v_radial), Vector3Scale(t_hat, v_tangential));
+        DVector3 pos = DVector3Scale(r_hat, new_r);
+        DVector3 vel = DVector3Add(DVector3Scale(r_hat, v_radial), DVector3Scale(t_hat, v_tangential));
 
         // Apply Inclination Change
-        if (fabsf(new_inclination - inclination) > 0.001f) {
-            float deltaInc = new_inclination - inclination;
-            Quaternion q = QuaternionFromAxisAngle(nodeVec, deltaInc);
-            pos = Vector3RotateByQuaternion(pos, q);
-            vel = Vector3RotateByQuaternion(vel, q);
+        if (fabs(new_inclination - inclination) > 0.001) {
+            double deltaInc = new_inclination - inclination;
+            Quaternion q = QuaternionFromAxisAngle(ToVector3(nodeVec), (float)deltaInc);
+            Vector3 posF = Vector3RotateByQuaternion(ToVector3(pos), q);
+            Vector3 velF = Vector3RotateByQuaternion(ToVector3(vel), q);
+            pos = (DVector3){posF.x, posF.y, posF.z};
+            vel = (DVector3){velF.x, velF.y, velF.z};
         }
 
-        b->position = Vector3Add(p->position, pos);
-        b->velocity = Vector3Add(p->velocity, vel);
+        b->position = DVector3Add(p->position, pos);
+        b->velocity = DVector3Add(p->velocity, vel);
     }
 }
 
 // Initialize simulation state, camera, and shaders
 void InitSimulation(SimulationState *state) {
-    state->camDist = 600.0f;
+    state->camDist = 2.0 * AU;
+    state->camPos = (DVector3){0, 2.0 * AU, 2.0 * AU};
     state->camAngle = (Vector2){ 0.0f, 1.0f };
     state->cameraTargetIndex = 0;
 
-    state->timeScale = 1.0f;
+    state->timeScale = 10000.0f; // Start with faster time
     state->enableDrag = false;
     state->showLagrange = false;
     state->enableRoche = true;
     state->relativeView = false;
+    state->integrator = INTEGRATOR_RK4;
 
     state->creationMode = false;
     state->isDragging = false;
     state->dragStartPos = (Vector3){0};
-    state->newBodyMass = 10.0f;
-    state->spawnHeight = 0.0f;
+    state->newBodyMass = M_EARTH;
+    state->spawnHeight = 0.0;
     state->spawnAngle = 0.0f;
 
     state->currentState = STATE_SIMULATION;
     state->shouldExit = false;
 
-    // 3D Camera
-    state->camera = (Camera3D){ 0 };
-    state->camera.position = (Vector3){ 0.0f, 400.0f, 400.0f };
-    state->camera.target = (Vector3){ 0.0f, 0.0f, 0.0f };
-    state->camera.up = (Vector3){ 0.0f, 1.0f, 0.0f };
-    state->camera.fovy = 45.0f;
-    state->camera.projection = CAMERA_PERSPECTIVE;
+    // 3D Camera (Raylib camera used for rendering relative to camPos)
+    state->renderCamera = (Camera3D){ 0 };
+    state->renderCamera.position = (Vector3){ 0.0f, 0.0f, 0.0f };
+    state->renderCamera.target = (Vector3){ 0.0f, 0.0f, 0.0f };
+    state->renderCamera.up = (Vector3){ 0.0f, 1.0f, 0.0f };
+    state->renderCamera.fovy = 45.0f;
+    state->renderCamera.projection = CAMERA_PERSPECTIVE;
 
     // Lighting Shader
     state->lightShader = LoadShaderFromMemory(
@@ -817,7 +989,7 @@ void HandleInput(SimulationState *state, Body bodies[], int screenWidth, int scr
     if (state->currentState == STATE_SIMULATION) {
         if (IsKeyPressed(KEY_N)) {
             state->creationMode = !state->creationMode;
-            state->spawnHeight = 0.0f;
+            state->spawnHeight = 0.0;
         }
 
         if (!state->creationMode) {
@@ -828,8 +1000,12 @@ void HandleInput(SimulationState *state, Body bodies[], int screenWidth, int scr
                 if (state->camAngle.y < 0.01f) state->camAngle.y = 0.01f;
                 if (state->camAngle.y > PI - 0.01f) state->camAngle.y = PI - 0.01f;
             }
-            state->camDist -= GetMouseWheelMove() * 50.0f;
-            if (state->camDist < 50.0f) state->camDist = 50.0f;
+            
+            float wheel = GetMouseWheelMove();
+            if (wheel != 0) {
+                state->camDist *= (1.0f - wheel * 0.1f);
+                if (state->camDist < 1000.0) state->camDist = 1000.0; // Min distance 1km
+            }
         }
 
         if (state->creationMode) {
@@ -841,16 +1017,31 @@ void HandleInput(SimulationState *state, Body bodies[], int screenWidth, int scr
             bool mouseOverUI = CheckCollisionPointRec(GetMousePosition(), uiRect);
 
             if (!mouseOverUI) {
-                Ray ray = GetMouseRay(GetMousePosition(), state->camera);
-
+                // Ray from camera (which is at 0,0,0 in render space)
+                Ray ray = GetMouseRay(GetMousePosition(), state->renderCamera);
+                
+                // We need to intersect with plane y = spawnHeight
+                // Ray origin in world space is state->camPos
+                // Ray dir is ray.direction
+                
+                // P = O + D*t
+                // P.y = spawnHeight
+                // O.y + D.y*t = spawnHeight
+                // t = (spawnHeight - O.y) / D.y
+                
                 if (fabs(ray.direction.y) > 0.001f) {
-                    float t = (state->spawnHeight - ray.position.y) / ray.direction.y;
+                    double t = (state->spawnHeight - state->camPos.y) / ray.direction.y;
                     if (t >= 0) {
-                        Vector3 mouseWorldPos = Vector3Add(ray.position, Vector3Scale(ray.direction, t));
+                        DVector3 mouseWorldPos = {
+                            state->camPos.x + ray.direction.x * t,
+                            state->camPos.y + ray.direction.y * t,
+                            state->camPos.z + ray.direction.z * t
+                        };
 
                         if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                             state->isDragging = true;
-                            state->dragStartPos = mouseWorldPos;
+                            // Store relative drag start for visualization
+                            state->dragStartPos = (Vector3){ (float)(mouseWorldPos.x - state->camPos.x), (float)(mouseWorldPos.y - state->camPos.y), (float)(mouseWorldPos.z - state->camPos.z) };
                         }
 
                         if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT) && state->isDragging) {
@@ -858,21 +1049,29 @@ void HandleInput(SimulationState *state, Body bodies[], int screenWidth, int scr
                             for (int i = 0; i < MAX_BODIES; i++) {
                                 if (!bodies[i].active) {
                                     bodies[i].active = true;
-                                    bodies[i].position = state->dragStartPos;
+                                    bodies[i].position = mouseWorldPos;
 
-                                    Vector3 dragVec = Vector3Subtract(mouseWorldPos, state->dragStartPos);
-                                    float speed = Vector3Length(dragVec);
-                                    Vector3 dirXZ = Vector3Normalize(dragVec);
+                                    // Calculate velocity based on drag distance
+                                    // We need to reconstruct drag start in world space
+                                    DVector3 dragStartWorld = {
+                                        state->camPos.x + state->dragStartPos.x,
+                                        state->camPos.y + state->dragStartPos.y,
+                                        state->camPos.z + state->dragStartPos.z
+                                    };
+                                    
+                                    DVector3 dragVec = DVector3Subtract(mouseWorldPos, dragStartWorld);
+                                    double dist = DVector3Length(dragVec);
+                                    // Scale velocity: 1 screen unit -> huge velocity?
+                                    // Let's say drag distance is proportional to orbital velocity at this distance
+                                    double speed = dist / state->camDist * 30000.0; // Arbitrary scaling
 
-                                    float angleRad = state->spawnAngle * DEG2RAD;
-                                    float vy = speed * sinf(angleRad);
-                                    float vxz = speed * cosf(angleRad);
-
-                                    bodies[i].velocity = (Vector3){ vxz * dirXZ.x, vy, vxz * dirXZ.z };
+                                    DVector3 dir = DVector3Normalize(dragVec);
+                                    
+                                    // Simple launch in direction
+                                    bodies[i].velocity = DVector3Scale(dir, speed);
 
                                     bodies[i].mass = state->newBodyMass;
-                                    bodies[i].radius = sqrtf(state->newBodyMass) * 3.0f;
-                                    if (bodies[i].radius < 5.0f) bodies[i].radius = 5.0f;
+                                    bodies[i].radius = cbrt(state->newBodyMass / M_EARTH) * 6.371e6;
                                     bodies[i].color = (Color){ GetRandomValue(100, 255), GetRandomValue(100, 255), GetRandomValue(100, 255), 255 };
 
                                     for(int t=0; t<TRAIL_LENGTH; t++) bodies[i].trail[t] = bodies[i].position;
@@ -888,7 +1087,7 @@ void HandleInput(SimulationState *state, Body bodies[], int screenWidth, int scr
 
         if (IsKeyPressed(KEY_RIGHT)) state->timeScale *= 2.0f;
         if (IsKeyPressed(KEY_LEFT)) state->timeScale *= 0.5f;
-        if (IsKeyPressed(KEY_SPACE)) state->timeScale = (state->timeScale == 0.0f) ? 1.0f : 0.0f;
+        if (IsKeyPressed(KEY_SPACE)) state->timeScale = (state->timeScale == 0.0f) ? 10000.0f : 0.0f;
     }
 }
 
@@ -896,29 +1095,23 @@ void HandleInput(SimulationState *state, Body bodies[], int screenWidth, int scr
 void UpdatePhysics(SimulationState *state, Body bodies[]) {
     if (state->currentState != STATE_SIMULATION) return;
 
-    // Update Camera Position
-    if (!bodies[state->cameraTargetIndex].active) state->cameraTargetIndex = 0;
-    Vector3 targetPos = bodies[state->cameraTargetIndex].position;
-    state->camera.target = targetPos;
-
-    state->camera.position.x = targetPos.x + state->camDist * sinf(state->camAngle.y) * cosf(state->camAngle.x);
-    state->camera.position.y = targetPos.y + state->camDist * cosf(state->camAngle.y);
-    state->camera.position.z = targetPos.z + state->camDist * sinf(state->camAngle.y) * sinf(state->camAngle.x);
-
-    // Update Shader Uniforms
-    SetShaderValue(state->lightShader, state->viewPosLoc, &state->camera.position, SHADER_UNIFORM_VEC3);
-    if (bodies[0].active) {
-        SetShaderValue(state->lightShader, state->lightPosLoc, &bodies[0].position, SHADER_UNIFORM_VEC3);
-    }
-
     float dt = GetFrameTime() * state->timeScale;
 
-    int subSteps = (int)ceilf(fabs(state->timeScale));
-    if (subSteps < 1) subSteps = 1;
-    float subDt = dt / subSteps;
+    // Dynamic sub-stepping for stability
+    // Target subDt around 50.0 seconds for good stability with moons
+    double targetSubDt = 50.0;
+    int subSteps = (int)ceil(dt / targetSubDt);
+    if (subSteps < 10) subSteps = 10; // Minimum steps
+    if (subSteps > 1000) subSteps = 1000; // Cap to prevent freeze
+    double subDt = (double)dt / subSteps;
 
     for (int step = 0; step < subSteps; step++) {
-        integrateRK4(bodies, subDt, state->enableDrag);
+        if (state->integrator == INTEGRATOR_RK4) {
+            integrateRK4(bodies, subDt, state->enableDrag);
+        } else {
+            integrateVerlet(bodies, subDt, state->enableDrag);
+        }
+        
         handleCollisions(bodies);
         if (state->enableRoche) checkRocheLimit(bodies);
     }
@@ -930,41 +1123,78 @@ void UpdatePhysics(SimulationState *state, Body bodies[]) {
             bodies[i].trailIndex = (bodies[i].trailIndex + 1) % TRAIL_LENGTH;
         }
     }
+
+    // Update Camera Position AFTER integration to prevent jitter/lag
+    if (!bodies[state->cameraTargetIndex].active) state->cameraTargetIndex = 0;
+    DVector3 targetPos = bodies[state->cameraTargetIndex].position;
+    state->camTarget = targetPos;
+
+    state->camPos.x = targetPos.x + state->camDist * sin(state->camAngle.y) * cos(state->camAngle.x);
+    state->camPos.y = targetPos.y + state->camDist * cos(state->camAngle.y);
+    state->camPos.z = targetPos.z + state->camDist * sin(state->camAngle.y) * sin(state->camAngle.x);
+
+    // Update Shader Uniforms
+    // We render relative to camera, so view pos is always 0,0,0
+    Vector3 viewPos = {0,0,0};
+    SetShaderValue(state->lightShader, state->viewPosLoc, &viewPos, SHADER_UNIFORM_VEC3);
+    
+    if (bodies[0].active) {
+        DVector3 sunRel = DVector3Subtract(bodies[0].position, state->camPos);
+        Vector3 sunPos = ToVector3(sunRel);
+        SetShaderValue(state->lightShader, state->lightPosLoc, &sunPos, SHADER_UNIFORM_VEC3);
+    }
 }
 
 // Render the 3D world (bodies, orbits, grid)
 void Draw3DScene(SimulationState *state, Body bodies[]) {
-    BeginMode3D(state->camera);
+    // Setup render camera at 0,0,0 looking at relative target
+    DVector3 targetRel = DVector3Subtract(state->camTarget, state->camPos);
+    state->renderCamera.target = ToVector3(targetRel);
+    state->renderCamera.position = (Vector3){0,0,0};
+    
+    BeginMode3D(state->renderCamera);
 
-    // Custom Grid
-    rlSetClipPlanes(1.0f, 10000.0f);
+    // Custom Grid centered on target
+    rlSetClipPlanes(1.0f, 1e15f); // Increase far plane
 
+    // Adaptive Grid
+    double gridSpacing = pow(10.0, floor(log10(state->camDist / 2.0)));
     int slices = 100;
-    float spacing = 50.0f;
-    float halfSize = slices * spacing / 2.0f;
+    double spacing = gridSpacing;
+    double halfSize = slices * spacing / 2.0;
     Color gridColor = Fade(LIGHTGRAY, 0.2f);
-    float gridY = -1.0f;
+    
+    // Grid is on XZ plane of the target
+    DVector3 gridCenter = state->camTarget;
+    DVector3 gridRel = DVector3Subtract(gridCenter, state->camPos);
 
     rlBegin(RL_LINES);
     rlColor4ub(gridColor.r, gridColor.g, gridColor.b, gridColor.a);
     for (int i = -slices/2; i <= slices/2; i++) {
-        rlVertex3f(i * spacing, gridY, -halfSize);
-        rlVertex3f(i * spacing, gridY, halfSize);
-        rlVertex3f(-halfSize, gridY, i * spacing);
-        rlVertex3f(halfSize, gridY, i * spacing);
+        // Lines parallel to Z
+        DVector3 p1 = { gridRel.x + i * spacing, gridRel.y, gridRel.z - halfSize };
+        DVector3 p2 = { gridRel.x + i * spacing, gridRel.y, gridRel.z + halfSize };
+        rlVertex3f((float)p1.x, (float)p1.y, (float)p1.z);
+        rlVertex3f((float)p2.x, (float)p2.y, (float)p2.z);
+
+        // Lines parallel to X
+        DVector3 p3 = { gridRel.x - halfSize, gridRel.y, gridRel.z + i * spacing };
+        DVector3 p4 = { gridRel.x + halfSize, gridRel.y, gridRel.z + i * spacing };
+        rlVertex3f((float)p3.x, (float)p3.y, (float)p3.z);
+        rlVertex3f((float)p4.x, (float)p4.y, (float)p4.z);
     }
     rlEnd();
 
     if (state->enableDrag && bodies[0].active) {
-        drawAccretionDisk(bodies[0].position);
+        drawAccretionDisk(bodies[0].position, state->camPos);
     }
 
     if (state->cameraTargetIndex != 0 && bodies[state->cameraTargetIndex].active) {
         if (state->relativeView) {
             int parent = findParentBody(bodies, state->cameraTargetIndex);
-            if (parent != -1) drawOrbit(bodies, state->cameraTargetIndex, parent);
+            if (parent != -1) drawOrbit(bodies, state->cameraTargetIndex, parent, state->camPos);
         } else {
-            drawOrbit(bodies, state->cameraTargetIndex, 0);
+            drawOrbit(bodies, state->cameraTargetIndex, 0, state->camPos);
         }
     }
 
@@ -973,21 +1203,48 @@ void Draw3DScene(SimulationState *state, Body bodies[]) {
         for (int j = 0; j < TRAIL_LENGTH - 1; j++) {
             int idx = (bodies[i].trailIndex + j) % TRAIL_LENGTH;
             int nextIdx = (idx + 1) % TRAIL_LENGTH;
-            if (Vector3DistanceSqr(bodies[i].trail[idx], bodies[i].trail[nextIdx]) > 0.001f)
-                DrawLine3D(bodies[i].trail[idx], bodies[i].trail[nextIdx], Fade(bodies[i].color, 0.4f));
+            
+            DVector3 p1d = DVector3Subtract(bodies[i].trail[idx], state->camPos);
+            DVector3 p2d = DVector3Subtract(bodies[i].trail[nextIdx], state->camPos);
+            
+            Vector3 p1 = ToVector3(p1d);
+            Vector3 p2 = ToVector3(p2d);
+            
+            if (Vector3DistanceSqr(p1, p2) > 0.001f)
+                DrawLine3D(p1, p2, Fade(bodies[i].color, 0.4f));
         }
     }
 
     for (int i = 0; i < MAX_BODIES; i++) {
         if (!bodies[i].active) continue;
 
-        if (i == 0) {
-            DrawSphere(bodies[i].position, bodies[i].radius, bodies[i].color);
+        double distToCam = DVector3Distance(bodies[i].position, state->camPos);
+        
+        // Visual Size Logic
+        double minVisualSize = distToCam * 0.002; // tan(angle) approx
+        double drawRadius = bodies[i].radius;
+        if (drawRadius < minVisualSize) drawRadius = minVisualSize;
+
+        DVector3 relPos = DVector3Subtract(bodies[i].position, state->camPos);
+        Vector3 pos = ToVector3(relPos);
+
+        // LOD: If object is very small on screen, draw a point
+        // Approximate screen size in pixels (assuming 45 deg FOV and 800px height)
+        // size_px = (diameter / dist) * (screen_height / (2 * tan(fov/2)))
+        // tan(22.5) ~ 0.414. 800 / 0.828 ~ 966.
+        double screenDiameter = (bodies[i].radius * 2.0 / distToCam) * 1000.0;
+
+        if (i != 0 && screenDiameter < 3.0) {
+            DrawPoint3D(pos, bodies[i].color);
         } else {
-            Vector3 scale = { bodies[i].radius, bodies[i].radius, bodies[i].radius };
-            float col[4] = { bodies[i].color.r/255.0f, bodies[i].color.g/255.0f, bodies[i].color.b/255.0f, bodies[i].color.a/255.0f };
-            SetShaderValue(state->lightShader, state->objectColorLoc, col, SHADER_UNIFORM_VEC4);
-            DrawModelEx(state->sphereModel, bodies[i].position, (Vector3){0,1,0}, 0.0f, scale, WHITE);
+            if (i == 0) {
+                DrawSphere(pos, (float)drawRadius, bodies[i].color);
+            } else {
+                Vector3 scale = { (float)drawRadius, (float)drawRadius, (float)drawRadius };
+                float col[4] = { bodies[i].color.r/255.0f, bodies[i].color.g/255.0f, bodies[i].color.b/255.0f, bodies[i].color.a/255.0f };
+                SetShaderValue(state->lightShader, state->objectColorLoc, col, SHADER_UNIFORM_VEC4);
+                DrawModelEx(state->sphereModel, pos, (Vector3){0,1,0}, 0.0f, scale, WHITE);
+            }
         }
     }
 
@@ -998,28 +1255,39 @@ void Draw3DScene(SimulationState *state, Body bodies[]) {
         int uiY = 10;
         Rectangle uiRect = { uiX, uiY, uiWidth, uiHeight };
 
-        Ray ray = GetMouseRay(GetMousePosition(), state->camera);
+        Ray ray = GetMouseRay(GetMousePosition(), state->renderCamera);
         if (fabs(ray.direction.y) > 0.001f) {
-            float t = (state->spawnHeight - ray.position.y) / ray.direction.y;
+            double t = (state->spawnHeight - state->camPos.y) / ray.direction.y;
             if (t >= 0) {
-                Vector3 mouseWorldPos = Vector3Add(ray.position, Vector3Scale(ray.direction, t));
+                DVector3 mouseWorldPos = {
+                    state->camPos.x + ray.direction.x * t,
+                    state->camPos.y + ray.direction.y * t,
+                    state->camPos.z + ray.direction.z * t
+                };
+                
+                DVector3 mouseRelPos = DVector3Subtract(mouseWorldPos, state->camPos);
+                Vector3 mouseRel = ToVector3(mouseRelPos);
 
                 if (!CheckCollisionPointRec(GetMousePosition(), uiRect)) {
                     if (state->isDragging) {
-                        Vector3 dragVec = Vector3Subtract(mouseWorldPos, state->dragStartPos);
-                        float speed = Vector3Length(dragVec);
-                        Vector3 dirXZ = Vector3Normalize(dragVec);
-                        float angleRad = state->spawnAngle * DEG2RAD;
-                        float vy = speed * sinf(angleRad);
-                        float vxz = speed * cosf(angleRad);
-                        Vector3 velocity = { vxz * dirXZ.x, vy, vxz * dirXZ.z };
-
-                        Vector3 endPos = Vector3Add(state->dragStartPos, velocity);
+                        // dragStartPos is relative to camPos at start of drag
+                        // But camPos might have moved? No, we assume camera is static during drag for simplicity or we should have stored world pos.
+                        // In HandleInput we stored dragStartPos as relative to camPos.
+                        // Let's assume we want to draw from dragStartPos (relative) to current mouse (relative)
+                        
+                        // Wait, dragStartPos in HandleInput was stored as relative to camPos.
+                        // If camPos changes, this is wrong. But camPos only changes if we move camera.
+                        // If we are dragging, we probably aren't moving camera (unless we allow both).
+                        
+                        Vector3 endPos = mouseRel;
                         DrawLine3D(state->dragStartPos, endPos, RED);
-                        DrawSphere(state->dragStartPos, 5.0f, GREEN);
-                        DrawLine3D(state->dragStartPos, (Vector3){state->dragStartPos.x, 0, state->dragStartPos.z}, Fade(GREEN, 0.3f));
+                        DrawSphere(state->dragStartPos, 5.0f, GREEN); // This 5.0f is tiny in real scale...
+                        // We need visual size for this too?
+                        // Or just use screen space drawing?
+                        // Let's just draw a line.
+                        
                     } else {
-                        DrawSphereWires(mouseWorldPos, sqrtf(state->newBodyMass)*3.0f, 8, 8, Fade(GRAY, 0.5f));
+                        DrawSphereWires(mouseRel, 10.0f, 8, 8, Fade(GRAY, 0.5f)); // 10.0f is tiny
                     }
                 }
             }
@@ -1027,7 +1295,7 @@ void Draw3DScene(SimulationState *state, Body bodies[]) {
     }
 
     if (state->showLagrange) {
-        drawLagrangePoints(bodies);
+        drawLagrangePoints(bodies, state->camPos);
     }
 
     EndMode3D();
@@ -1054,19 +1322,21 @@ void DrawUI(SimulationState *state, Body bodies[], int screenWidth, int screenHe
         int startY = uiY + 30;
 
         // Mass
-        GuiLabel((Rectangle){startX, startY, 260, 20}, TextFormat("Mass: %.1f", state->newBodyMass));
+        GuiLabel((Rectangle){startX, startY, 260, 20}, TextFormat("Mass: %.1e kg", state->newBodyMass));
         startY += 20;
-        float tempMass = state->newBodyMass;
-        GuiSlider((Rectangle){startX, startY, 200, 20}, NULL, NULL, &tempMass, 1.0f, 100.0f);
-        state->newBodyMass = tempMass;
+        // Logarithmic slider for mass?
+        // Just a simple slider for now, maybe scaling M_EARTH
+        float tempMass = (float)(state->newBodyMass / M_EARTH);
+        GuiSlider((Rectangle){startX, startY, 200, 20}, NULL, NULL, &tempMass, 0.1f, 1000.0f);
+        state->newBodyMass = (double)tempMass * M_EARTH;
         startY += 30;
 
         // Height Offset
-        GuiLabel((Rectangle){startX, startY, 260, 20}, TextFormat("Height Offset: %.1f", state->spawnHeight));
+        GuiLabel((Rectangle){startX, startY, 260, 20}, TextFormat("Height Offset: %.1f AU", state->spawnHeight / AU));
         startY += 20;
-        float tempHeight = state->spawnHeight;
-        GuiSlider((Rectangle){startX, startY, 200, 20}, NULL, NULL, &tempHeight, -200.0f, 200.0f);
-        state->spawnHeight = tempHeight;
+        float tempHeight = (float)(state->spawnHeight / AU);
+        GuiSlider((Rectangle){startX, startY, 200, 20}, NULL, NULL, &tempHeight, -2.0f, 2.0f);
+        state->spawnHeight = (double)tempHeight * AU;
         startY += 30;
 
         // Launch Angle
@@ -1081,19 +1351,77 @@ void DrawUI(SimulationState *state, Body bodies[], int screenWidth, int screenHe
     }
 
     if (state->currentState == STATE_SIMULATION) {
-        Ray ray = GetMouseRay(GetMousePosition(), state->camera);
+        // Draw Planet Indicators
+        for (int i = 0; i < MAX_BODIES; i++) {
+            if (!bodies[i].active) continue;
+            
+            DVector3 relPos = DVector3Subtract(bodies[i].position, state->camPos);
+            Vector3 center = ToVector3(relPos);
+            
+            // Check if in front of camera
+            Vector3 camForward = Vector3Normalize(Vector3Subtract(state->renderCamera.target, state->renderCamera.position));
+            Vector3 toBody = Vector3Normalize(center);
+            
+            if (Vector3DotProduct(toBody, camForward) > 0.0f) {
+                Vector2 screenPos = GetWorldToScreen(center, state->renderCamera);
+                
+                // Calculate visual size to decide if we need a marker
+                double distToCam = DVector3Length(relPos);
+                double screenDiameter = (bodies[i].radius * 2.0 / distToCam) * 1000.0; // Approx pixels
+                
+                if (screenDiameter < 10.0) { // If smaller than 10 pixels
+                    DrawCircleLines((int)screenPos.x, (int)screenPos.y, 10.0f, Fade(bodies[i].color, 0.5f));
+                }
+            }
+        }
+
+        Ray ray = GetMouseRay(GetMousePosition(), state->renderCamera);
         int hitIndex = -1;
         float minHitDist = 1e9f;
+        
+        // Proximity selection variables
+        int closestProximityIndex = -1;
+        float minScreenDist = 30.0f; // 30 pixels radius tolerance for "near miss" clicks
+        Vector2 mousePos = GetMousePosition();
 
         for (int i = 0; i < MAX_BODIES; i++) {
             if (!bodies[i].active) continue;
-            RayCollision collision = GetRayCollisionSphere(ray, bodies[i].position, bodies[i].radius);
+            
+            DVector3 relPos = DVector3Subtract(bodies[i].position, state->camPos);
+            Vector3 center = ToVector3(relPos);
+            
+            double distToCam = DVector3Length(relPos);
+            double minVisualSize = distToCam * 0.002;
+            double hitRadius = fmax(bodies[i].radius, minVisualSize);
+
+            // 1. Exact Raycast (Priority)
+            RayCollision collision = GetRayCollisionSphere(ray, center, (float)hitRadius);
             if (collision.hit) {
                 if (collision.distance < minHitDist) {
                     minHitDist = collision.distance;
                     hitIndex = i;
                 }
             }
+
+            // 2. Screen Space Proximity (Fallback for small/distant objects)
+            // Check if object is in front of camera
+            Vector3 toBody = Vector3Normalize(center);
+            Vector3 camForward = Vector3Normalize(Vector3Subtract(state->renderCamera.target, state->renderCamera.position));
+            
+            if (Vector3DotProduct(toBody, camForward) > 0.0f) {
+                Vector2 screenPos = GetWorldToScreen(center, state->renderCamera);
+                float screenDist = Vector2Distance(mousePos, screenPos);
+                
+                if (screenDist < minScreenDist) {
+                    minScreenDist = screenDist;
+                    closestProximityIndex = i;
+                }
+            }
+        }
+
+        // If no direct hit, use the closest proximity hit
+        if (hitIndex == -1) {
+            hitIndex = closestProximityIndex;
         }
 
         if (hitIndex != -1) {
@@ -1102,15 +1430,18 @@ void DrawUI(SimulationState *state, Body bodies[], int screenWidth, int screenHe
             }
 
             Body *b = &bodies[hitIndex];
-            float speed = Vector3Length(b->velocity);
-            float distToSun = Vector3Distance(b->position, bodies[0].position);
-            float kineticE = 0.5f * b->mass * speed * speed;
+            double speed = DVector3Length(b->velocity);
+            double distToSun = DVector3Distance(b->position, bodies[0].position);
+            double kineticE = 0.5 * b->mass * speed * speed;
 
             char infoText[512];
-            sprintf(infoText, "Mass: %.1f\nSpeed: %.1f\nDist to Sun: %.1f\nKinetic E: %.1e\nPos: (%.0f, %.0f, %.0f)",
-                    b->mass, speed, distToSun, kineticE, b->position.x, b->position.y, b->position.z);
+            sprintf(infoText, "Mass: %.2e kg\nSpeed: %.1f km/s\nDist to Sun: %.2f AU\nKinetic E: %.1e J",
+                    b->mass, speed / 1000.0, distToSun / AU, kineticE);
 
-            Vector2 screenPos = GetWorldToScreen(b->position, state->camera);
+            // We need screen pos of the body
+            DVector3 relPos = DVector3Subtract(b->position, state->camPos);
+            Vector2 screenPos = GetWorldToScreen(ToVector3(relPos), state->renderCamera);
+            
             DrawRectangle(screenPos.x + 20, screenPos.y - 60, 220, 110, Fade(DARKGRAY, 0.9f));
             DrawRectangleLines(screenPos.x + 20, screenPos.y - 60, 220, 110, WHITE);
             DrawText(infoText, screenPos.x + 25, screenPos.y - 55, 10, WHITE);
@@ -1118,8 +1449,8 @@ void DrawUI(SimulationState *state, Body bodies[], int screenWidth, int screenHe
     }
 
     DrawFPS(10, 10);
-    DrawText(TextFormat("Time Scale: %.2fx", state->timeScale), 10, 30, 20, WHITE);
-    DrawText("RK4 | N-Body | Collisions | Relativistic Precession", 10, 50, 20, GREEN);
+    DrawText(TextFormat("Time Scale: %.0fx", state->timeScale), 10, 30, 20, WHITE);
+    DrawText(state->integrator == INTEGRATOR_RK4 ? "Integrator: RK4 (Accurate)" : "Integrator: Verlet (Fast)", 10, 50, 20, state->integrator == INTEGRATOR_RK4 ? GREEN : SKYBLUE);
 
     int statusY = 70;
     int x = 10;
@@ -1150,7 +1481,7 @@ void DrawUI(SimulationState *state, Body bodies[], int screenWidth, int screenHe
     }
 
     if (state->creationMode && state->currentState == STATE_SIMULATION) {
-        DrawText(TextFormat("Creation Mode: Click & Drag to launch. Scroll: Mass %.1f", state->newBodyMass), 10, 100, 20, YELLOW);
+        DrawText(TextFormat("Creation Mode: Click & Drag to launch. Scroll: Mass %.1e", state->newBodyMass), 10, 100, 20, YELLOW);
     }
 
     if (state->currentState == STATE_MENU) {
@@ -1178,8 +1509,20 @@ void DrawUI(SimulationState *state, Body bodies[], int screenWidth, int screenHe
         GuiToggle((Rectangle){menuX, menuY, 300, 40}, "Roche Limit", &state->enableRoche);
         GuiToggle((Rectangle){menuX, menuY + 50, 300, 40}, "Accretion Drag", &state->enableDrag);
         GuiToggle((Rectangle){menuX, menuY + 100, 300, 40}, "Lagrange Points", &state->showLagrange);
+        
+        bool isVerlet = (state->integrator == INTEGRATOR_VERLET);
+        bool prevVerlet = isVerlet;
+        GuiToggle((Rectangle){menuX, menuY + 150, 300, 40}, "Use Verlet Integrator", &isVerlet);
+        
+        if (isVerlet != prevVerlet) {
+            state->integrator = isVerlet ? INTEGRATOR_VERLET : INTEGRATOR_RK4;
+            // Recalculate accelerations if switching to Verlet
+            if (state->integrator == INTEGRATOR_VERLET) {
+                calculateAccelerations(bodies, state->enableDrag);
+            }
+        }
 
-        if (GuiButton((Rectangle){menuX, menuY + 160, 300, 40}, "Back")) state->currentState = STATE_MENU;
+        if (GuiButton((Rectangle){menuX, menuY + 210, 300, 40}, "Back")) state->currentState = STATE_MENU;
     }
 }
 
@@ -1196,6 +1539,9 @@ int main(void)
     Body bodies[MAX_BODIES];
     initBodies(bodies);
     InitSimulation(&state);
+
+    // Initialize accelerations for Verlet
+    calculateAccelerations(bodies, state.enableDrag);
 
     while (!state.shouldExit && !WindowShouldClose()) {
         HandleInput(&state, bodies, screenWidth, screenHeight);
