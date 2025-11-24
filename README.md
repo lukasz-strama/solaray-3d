@@ -1,6 +1,8 @@
 # Solar System Simulation 3D (N-Body RK4)
 
-Educational project designed to explore numerical integration methods and astrophysical concepts in a fully interactive 3D environment. It is not a scientifically accurate simulator of the real solar system, but rather a sandbox for visualizing mathematical models of gravity, orbital mechanics, and celestial phenomena. Made also to learn `raylib`. 2D version [here](https://github.com/lukasz-strama/solaray).
+Educational project designed to explore numerical integration methods and astrophysical concepts in a fully interactive 3D environment. It is not a scientifically accurate simulator of the real solar system, but rather a sandbox for visualizing mathematical models of gravity, orbital mechanics, and celestial phenomena. Made also to learn `raylib`. 
+
+Based on [2D version](github.com/lukasz-strama/solaray).
 
 ![Program Demo](demo.gif)
 
@@ -74,6 +76,13 @@ $$
 *   **Fragmentation Physics**: When the Roche limit is breached, bodies spawn random fragments. This is a visual approximation.
 *   **Performance**: The $O(N^2)$ complexity limits the simulation to approximately 500 bodies before frame rate drops on average hardware.
 *   **No Atmospheric Effects**: Drag is a simple linear model; no complex fluid dynamics are simulated.
+
+### TO-DO
+*   **Improved Collision Handling**: More sophisticated fragmentation and debris field simulation.
+*   **Enhanced Visuals**: Add textures, lighting effects, and particle systems.
+*   **User Interface**: More intuitive controls and information display.
+*   **Scale Constants**: Implement a more realistic scaling system for distances and masses.
+*   **Loading Presets**: Predefined solar system configurations imitating real systems.
 
 ## Controls
 
