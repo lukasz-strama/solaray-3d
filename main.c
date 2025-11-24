@@ -32,6 +32,41 @@ typedef struct {
     Vector3 dVelocity; // acceleration
 } Derivative;
 
+typedef enum {
+    STATE_SIMULATION,
+    STATE_MENU,
+    STATE_SETTINGS
+} AppState;
+
+typedef struct {
+    Camera3D camera;
+    float camDist;
+    Vector2 camAngle;
+    int cameraTargetIndex;
+
+    float timeScale;
+    bool enableDrag;
+    bool showLagrange;
+    bool enableRoche;
+    bool relativeView;
+
+    bool creationMode;
+    bool isDragging;
+    Vector3 dragStartPos;
+    float newBodyMass;
+    float spawnHeight;
+    float spawnAngle;
+
+    AppState currentState;
+    bool shouldExit;
+
+    Shader lightShader;
+    Model sphereModel;
+    int lightPosLoc;
+    int viewPosLoc;
+    int objectColorLoc;
+} SimulationState;
+
 // Extract state from bodies for RK4
 void getStates(Body bodies[], State states[]) {
     for(int i=0; i<MAX_BODIES; i++) {
@@ -56,15 +91,15 @@ void calculateDerivatives(State states[], Derivative derivs[], Body bodies[], bo
         if (enableDrag && bodies[0].active) {
             // Assume Body 0 is the center (Sun)
             float distToCenter = Vector3Distance(states[i].position, states[0].position);
-            
+
             if (distToCenter > DISK_INNER_RADIUS && distToCenter < DISK_OUTER_RADIUS) {
                 // Density function: Higher density closer to center
                 float normalizedDist = (distToCenter - DISK_INNER_RADIUS) / (DISK_OUTER_RADIUS - DISK_INNER_RADIUS);
                 float density = 1.0f - normalizedDist;
                 if (density < 0.0f) density = 0.0f;
-                
-                float dragCoeff = 0.002f * density; 
-                
+
+                float dragCoeff = 0.002f * density;
+
                 // F_drag = -c * rho * v
                 Vector3 drag = Vector3Scale(states[i].velocity, -dragCoeff);
                 force = Vector3Add(force, drag);
@@ -76,9 +111,9 @@ void calculateDerivatives(State states[], Derivative derivs[], Body bodies[], bo
 
             Vector3 direction = Vector3Subtract(states[j].position, states[i].position);
             float distance = Vector3Length(direction);
-            
-            float minDist = bodies[i].radius + bodies[j].radius; 
-            if (distance < minDist) distance = minDist; 
+
+            float minDist = bodies[i].radius + bodies[j].radius;
+            if (distance < minDist) distance = minDist;
 
             float forceMagnitude = (G * bodies[i].mass * bodies[j].mass) / (distance * distance);
 
@@ -87,7 +122,7 @@ void calculateDerivatives(State states[], Derivative derivs[], Body bodies[], bo
             // h = |r x v|
             Vector3 hVec = Vector3CrossProduct(direction, relVel);
             float h = Vector3Length(hVec);
-            
+
             float correction = (3.0f * h * h) / (C_SPEED * C_SPEED * distance * distance);
             forceMagnitude *= (1.0f + correction);
 
@@ -134,7 +169,7 @@ void integrateRK4(Body bodies[], float dt, bool enableDrag) {
     for(int i=0; i<MAX_BODIES; i++) {
         if (!bodies[i].active) continue;
         if (i == 0) continue; // Sun is stationary
-        
+
         Vector3 dPos = Vector3Scale(Vector3Add(Vector3Add(k1[i].dPosition, Vector3Scale(k2[i].dPosition, 2.0f)), Vector3Add(Vector3Scale(k3[i].dPosition, 2.0f), k4[i].dPosition)), dt / 6.0f);
         Vector3 dVel = Vector3Scale(Vector3Add(Vector3Add(k1[i].dVelocity, Vector3Scale(k2[i].dVelocity, 2.0f)), Vector3Add(Vector3Scale(k3[i].dVelocity, 2.0f), k4[i].dVelocity)), dt / 6.0f);
 
@@ -165,14 +200,14 @@ void handleCollisions(Body bodies[]) {
                     b1->radius = cbrtf(powf(b1->radius, 3.0f) + powf(b2->radius, 3.0f));
                 } else {
                     b1->velocity = Vector3Scale(totalMomentum, 1.0f / totalMass);
-                    
+
                     // Weighted position
                     b1->position = Vector3Scale(Vector3Add(Vector3Scale(b1->position, b1->mass), Vector3Scale(b2->position, b2->mass)), 1.0f/totalMass);
 
                     b1->radius = cbrtf(powf(b1->radius, 3.0f) + powf(b2->radius, 3.0f));
                     b1->mass = totalMass;
                 }
-                
+
                 b2->active = false;
             }
         }
@@ -181,31 +216,31 @@ void handleCollisions(Body bodies[]) {
 
 void explodeBody(Body bodies[], int index) {
     bodies[index].active = false;
-    
+
     int fragments = 8;
     float newMass = bodies[index].mass / fragments;
     float newRadius = bodies[index].radius / 2.0f;
     if (newRadius < 2.0f) newRadius = 2.0f;
-    
+
     for (int k = 0; k < fragments; k++) {
         for (int j = 0; j < MAX_BODIES; j++) {
             if (!bodies[j].active) {
                 bodies[j].active = true;
                 bodies[j].mass = newMass;
                 bodies[j].radius = newRadius;
-                bodies[j].color = (Color){ 
+                bodies[j].color = (Color){
                     (unsigned char)fminf(255, bodies[index].color.r + GetRandomValue(-20, 20)),
                     (unsigned char)fminf(255, bodies[index].color.g + GetRandomValue(-20, 20)),
                     (unsigned char)fminf(255, bodies[index].color.b + GetRandomValue(-20, 20)),
-                    255 
+                    255
                 };
-                
+
                 Vector3 offset = { (float)GetRandomValue(-5, 5), (float)GetRandomValue(-5, 5), (float)GetRandomValue(-5, 5) };
                 bodies[j].position = Vector3Add(bodies[index].position, offset);
-                
+
                 Vector3 velSpread = { (float)GetRandomValue(-20, 20) / 10.0f, (float)GetRandomValue(-20, 20) / 10.0f, (float)GetRandomValue(-20, 20) / 10.0f };
                 bodies[j].velocity = Vector3Add(bodies[index].velocity, velSpread);
-                
+
                 bodies[j].trailIndex = 0;
                 for(int t=0; t<TRAIL_LENGTH; t++) bodies[j].trail[t] = bodies[j].position;
                 break;
@@ -216,17 +251,17 @@ void explodeBody(Body bodies[], int index) {
 
 void checkRocheLimit(Body bodies[]) {
     if (!bodies[0].active) return;
-    
+
     for (int i = 1; i < MAX_BODIES; i++) {
         if (!bodies[i].active) continue;
-        
+
         float dist = Vector3Distance(bodies[i].position, bodies[0].position);
-        
-        if (bodies[i].mass < 0.1f) continue; 
-        
+
+        if (bodies[i].mass < 0.1f) continue;
+
         float massRatio = bodies[0].mass / bodies[i].mass;
         float rocheLimit = 1.26f * bodies[i].radius * cbrtf(massRatio);
-        
+
         if (bodies[i].radius > 3.0f && dist < rocheLimit) {
             explodeBody(bodies, i);
         }
@@ -259,7 +294,7 @@ void drawLagrangePoints(Body bodies[]) {
     float R = Vector3Length(R_vec);
     Vector3 u = Vector3Scale(R_vec, 1.0f / R);
 
-    float massRatio = m2->mass / m1->mass; 
+    float massRatio = m2->mass / m1->mass;
     float hillRadius = R * cbrtf(massRatio / 3.0f);
 
     Vector3 l1 = Vector3Subtract(r2, Vector3Scale(u, hillRadius));
@@ -279,40 +314,40 @@ void drawLagrangePoints(Body bodies[]) {
     // L4/L5 form equilateral triangles.
     // Position is R/2 along u, and sqrt(3)/2 * R along perp.
     float h_tri = 0.8660254f * R; // sin(60) * R
-    
+
     Vector3 l4 = Vector3Add(Vector3Add(r1, Vector3Scale(u, R * 0.5f)), Vector3Scale(perp, h_tri));
     Vector3 l5 = Vector3Add(Vector3Add(r1, Vector3Scale(u, R * 0.5f)), Vector3Scale(perp, -h_tri));
 
     Color lColor = VIOLET;
     float lRadius = 5.0f;
-    
-    DrawSphere(l1, lRadius, lColor); 
-    DrawSphere(l2, lRadius, lColor); 
-    DrawSphere(l3, lRadius, lColor); 
-    DrawSphere(l4, lRadius, lColor); 
-    DrawSphere(l5, lRadius, lColor); 
+
+    DrawSphere(l1, lRadius, lColor);
+    DrawSphere(l2, lRadius, lColor);
+    DrawSphere(l3, lRadius, lColor);
+    DrawSphere(l4, lRadius, lColor);
+    DrawSphere(l5, lRadius, lColor);
 }
 
 // Helper to create a body in a stable circular orbit around a parent
 Body createOrbitingBody(Body parent, float orbitRadius, float angleDeg, float mass, float radius, Color color) {
     float theta = angleDeg * DEG2RAD;
-    
+
     // Position offset
     float dx = orbitRadius * cosf(theta);
     float dz = orbitRadius * sinf(theta);
-    
+
     Vector3 position = Vector3Add(parent.position, (Vector3){ dx, 0.0f, dz });
-    
+
     // Orbital velocity (circular) v = sqrt(GM / r)
     float vMag = sqrtf((G * parent.mass) / orbitRadius);
-    
+
     // Velocity vector (tangent to circle)
     // If pos is (cos, sin), vel is (-sin, cos) for counter-clockwise orbit
     float vx = -vMag * sinf(theta);
     float vz = vMag * cosf(theta);
-    
+
     Vector3 velocity = Vector3Add(parent.velocity, (Vector3){ vx, 0.0f, vz });
-    
+
     Body b = {0};
     b.position = position;
     b.velocity = velocity;
@@ -322,7 +357,7 @@ Body createOrbitingBody(Body parent, float orbitRadius, float angleDeg, float ma
     b.active = true;
     b.trailIndex = 0;
     for(int i=0; i<TRAIL_LENGTH; i++) b.trail[i] = position;
-    
+
     return b;
 }
 
@@ -338,16 +373,16 @@ void initBodies(Body bodies[]) {
         .color = YELLOW,
         .active = true
     };
-    
+
     // Planet 1
     bodies[1] = createOrbitingBody(bodies[0], 200.0f, 0.0f, 10.0f, 10.0f, BLUE);
-    
+
     // Planet 2
     bodies[2] = createOrbitingBody(bodies[0], 500.0f, 0.0f, 8.0f, 8.0f, RED);
-    
+
     // Planet 3 (Orange)
     bodies[3] = createOrbitingBody(bodies[0], 850.0f, 0.0f, 500.0f, 20.0f, ORANGE);
-    
+
     // Moon of Planet 3
     bodies[4] = createOrbitingBody(bodies[3], 45.0f, 0.0f, 1.0f, 4.0f, WHITE);
 
@@ -358,12 +393,6 @@ void initBodies(Body bodies[]) {
         bodies[i].trailIndex = 0;
     }
 }
-
-typedef enum {
-    STATE_SIMULATION,
-    STATE_MENU,
-    STATE_SETTINGS
-} AppState;
 
 void drawAccretionDisk(Vector3 center) {
     float inner = DISK_INNER_RADIUS;
@@ -405,7 +434,7 @@ void drawOrbit(Body bodies[], int targetIndex, int centerIndex) {
 
     Vector3 rVec = Vector3Subtract(planet->position, center->position);
     Vector3 vVec = Vector3Subtract(planet->velocity, center->velocity);
-    
+
     float r = Vector3Length(rVec);
     float v = Vector3Length(vVec);
     float mu = G * (center->mass + planet->mass);
@@ -413,7 +442,7 @@ void drawOrbit(Body bodies[], int targetIndex, int centerIndex) {
     // Specific angular momentum h = r x v
     Vector3 hVec = Vector3CrossProduct(rVec, vVec);
     float h = Vector3Length(hVec);
-    if (h < 0.1f) return; 
+    if (h < 0.1f) return;
 
     // Eccentricity vector e = (v x h) / mu - r / |r|
     Vector3 vxh = Vector3CrossProduct(vVec, hVec);
@@ -422,7 +451,7 @@ void drawOrbit(Body bodies[], int targetIndex, int centerIndex) {
 
     // Semi-major axis a = 1 / (2/r - v^2/mu)
     float energy = v*v/2.0f - mu/r;
-    if (fabs(energy) < 0.0001f) return; 
+    if (fabs(energy) < 0.0001f) return;
     float a = -mu / (2.0f * energy);
 
     if (e >= 1.0f || a < 0) return; // Hyperbolic/Parabolic
@@ -436,11 +465,11 @@ void drawOrbit(Body bodies[], int targetIndex, int centerIndex) {
         if (fabs(n.y) < 0.9f) p = Vector3Normalize(Vector3CrossProduct((Vector3){0,1,0}, n));
         else p = Vector3Normalize(Vector3CrossProduct((Vector3){1,0,0}, n));
     }
-    Vector3 q = Vector3CrossProduct(n, p); 
+    Vector3 q = Vector3CrossProduct(n, p);
 
     // Draw Orbit Path
     rlBegin(RL_LINES);
-    rlColor4ub(255, 255, 255, 60); 
+    rlColor4ub(255, 255, 255, 60);
 
     int segments = 100;
     Vector3 prevPos = {0};
@@ -449,7 +478,7 @@ void drawOrbit(Body bodies[], int targetIndex, int centerIndex) {
     for (int i = 0; i <= segments; i++) {
         float theta = (float)i / segments * 2.0f * PI;
         float radius = a * (1.0f - e*e) / (1.0f + e * cosf(theta));
-        
+
         Vector3 posInPlane = Vector3Add(Vector3Scale(p, radius * cosf(theta)), Vector3Scale(q, radius * sinf(theta)));
         Vector3 worldPos = Vector3Add(center->position, posInPlane);
 
@@ -465,28 +494,28 @@ void drawOrbit(Body bodies[], int targetIndex, int centerIndex) {
     // Draw Periapsis (Green) and Apoapsis (Red)
     float r_peri = a * (1.0f - e);
     float r_apo = a * (1.0f + e);
-    
+
     Vector3 posPeri = Vector3Add(center->position, Vector3Scale(p, r_peri));
-    Vector3 posApo = Vector3Add(center->position, Vector3Scale(p, -r_apo)); 
+    Vector3 posApo = Vector3Add(center->position, Vector3Scale(p, -r_apo));
 
     DrawSphere(posPeri, 3.0f, GREEN);
     DrawSphere(posApo, 3.0f, RED);
 }
 
 int findParentBody(Body bodies[], int subjectIndex) {
-    if (subjectIndex == 0) return -1; 
-    
-    int bestParent = 0; 
+    if (subjectIndex == 0) return -1;
+
+    int bestParent = 0;
     float maxForce = -1.0f;
-    
+
     for (int i = 0; i < MAX_BODIES; i++) {
         if (i == subjectIndex || !bodies[i].active) continue;
-        
+
         float dist = Vector3Distance(bodies[i].position, bodies[subjectIndex].position);
         if (dist < 1.0f) continue;
-        
+
         float force = bodies[i].mass / (dist * dist);
-        
+
         if (force > maxForce) {
             maxForce = force;
             bestParent = i;
@@ -497,17 +526,17 @@ int findParentBody(Body bodies[], int subjectIndex) {
 
 void drawOrbitEditor(Body bodies[], int targetIndex, int screenWidth, int screenHeight) {
     if (targetIndex == 0 || !bodies[targetIndex].active) return;
-    
+
     int parentIndex = findParentBody(bodies, targetIndex);
-    if (parentIndex == -1) return; 
-    
+    if (parentIndex == -1) return;
+
     Body *b = &bodies[targetIndex];
     Body *p = &bodies[parentIndex];
-    
+
     // Calculate relative state
     Vector3 relPos = Vector3Subtract(b->position, p->position);
     Vector3 relVel = Vector3Subtract(b->velocity, p->velocity);
-    
+
     float dist = Vector3Length(relPos);
     float speed = Vector3Length(relVel);
     float mu = G * (p->mass + b->mass);
@@ -516,25 +545,25 @@ void drawOrbitEditor(Body bodies[], int targetIndex, int screenWidth, int screen
     Vector3 hVec = Vector3CrossProduct(relPos, relVel);
     float h = Vector3Length(hVec);
     Vector3 n = Vector3Scale(hVec, 1.0f/h);
-    
+
     Vector3 vxh = Vector3CrossProduct(relVel, hVec);
     Vector3 eVec = Vector3Subtract(Vector3Scale(vxh, 1.0f/mu), Vector3Scale(relPos, 1.0f/dist));
     float e = Vector3Length(eVec);
-    
+
     // Handle circular orbits (e ~ 0)
     Vector3 eDir;
     if (e < 1e-4f) {
         e = 0.0f;
-        eDir = Vector3Normalize(relPos); 
+        eDir = Vector3Normalize(relPos);
     } else {
         eDir = Vector3Normalize(eVec);
     }
-    
+
     Vector3 qDir = Vector3CrossProduct(n, eDir);
-    
+
     float energy = speed*speed/2.0f - mu/dist;
     float a = -mu / (2.0f * energy);
-    
+
     // True Anomaly nu
     float nu = atan2f(Vector3DotProduct(relPos, qDir), Vector3DotProduct(relPos, eDir));
 
@@ -564,16 +593,16 @@ void drawOrbitEditor(Body bodies[], int targetIndex, int screenWidth, int screen
     int uiX = screenWidth - uiWidth - 10;
     int uiY = screenHeight - uiHeight - 10;
     Rectangle uiRect = { uiX, uiY, uiWidth, uiHeight };
-    
+
     DrawRectangleRec(uiRect, Fade(BLACK, 0.8f));
     DrawRectangleLinesEx(uiRect, 1, DARKGRAY);
-    
+
     int startX = uiX + 10;
     int startY = uiY + 10;
-    
+
     DrawText("ORBIT EDITOR", startX, startY, 20, WHITE);
     startY += 30;
-    
+
     // Info
     DrawText(TextFormat("Period: %.1f s", period), startX, startY, 10, YELLOW);
     startY += 20;
@@ -626,7 +655,7 @@ void drawOrbitEditor(Body bodies[], int targetIndex, int screenWidth, int screen
         float new_p = val * 1000.0f;
         if (new_p < 10.0f) new_p = 10.0f;
         if (new_p >= r_apo) new_p = r_apo - 1.0f; // Clamp
-        
+
         new_a = (new_p + r_apo) / 2.0f;
         new_e = (r_apo - new_p) / (r_apo + new_p);
         changed = true;
@@ -644,7 +673,7 @@ void drawOrbitEditor(Body bodies[], int targetIndex, int screenWidth, int screen
         float val = (GetMouseX() - apRect.x) / apRect.width;
         float new_ap = val * 1000.0f;
         if (new_ap <= r_peri) new_ap = r_peri + 1.0f; // Clamp
-        
+
         new_a = (r_peri + new_ap) / 2.0f;
         new_e = (new_ap - r_peri) / (new_ap + r_peri);
         changed = true;
@@ -681,16 +710,16 @@ void drawOrbitEditor(Body bodies[], int targetIndex, int screenWidth, int screen
         // Reconstruct vectors
         Vector3 new_eDir = Vector3Add(Vector3Scale(u, cosf(new_angle)), Vector3Scale(v, sinf(new_angle)));
         Vector3 new_qDir = Vector3CrossProduct(n, new_eDir);
-        
+
         float slr = new_a * (1.0f - new_e * new_e);
         float new_r = slr / (1.0f + new_e * cosf(nu));
-        
+
         float v_radial = sqrtf(mu/slr) * new_e * sinf(nu);
         float v_tangential = sqrtf(mu/slr) * (1.0f + new_e * cosf(nu));
-        
+
         Vector3 r_hat = Vector3Add(Vector3Scale(new_eDir, cosf(nu)), Vector3Scale(new_qDir, sinf(nu)));
         Vector3 t_hat = Vector3CrossProduct(n, r_hat);
-        
+
         Vector3 pos = Vector3Scale(r_hat, new_r);
         Vector3 vel = Vector3Add(Vector3Scale(r_hat, v_radial), Vector3Scale(t_hat, v_tangential));
 
@@ -707,46 +736,38 @@ void drawOrbitEditor(Body bodies[], int targetIndex, int screenWidth, int screen
     }
 }
 
-int main(void)
-{
-    const int screenWidth = 1200;
-    const int screenHeight = 800;
+// Initialize simulation state, camera, and shaders
+void InitSimulation(SimulationState *state) {
+    state->camDist = 600.0f;
+    state->camAngle = (Vector2){ 0.0f, 1.0f };
+    state->cameraTargetIndex = 0;
 
-    InitWindow(screenWidth, screenHeight, "Solar System Simulation 3D - Solaray");
-    SetTargetFPS(60);
-    SetExitKey(KEY_NULL);
+    state->timeScale = 1.0f;
+    state->enableDrag = false;
+    state->showLagrange = false;
+    state->enableRoche = true;
+    state->relativeView = false;
+
+    state->creationMode = false;
+    state->isDragging = false;
+    state->dragStartPos = (Vector3){0};
+    state->newBodyMass = 10.0f;
+    state->spawnHeight = 0.0f;
+    state->spawnAngle = 0.0f;
+
+    state->currentState = STATE_SIMULATION;
+    state->shouldExit = false;
 
     // 3D Camera
-    Camera3D camera = { 0 };
-    camera.position = (Vector3){ 0.0f, 400.0f, 400.0f };
-    camera.target = (Vector3){ 0.0f, 0.0f, 0.0f };
-    camera.up = (Vector3){ 0.0f, 1.0f, 0.0f };
-    camera.fovy = 45.0f;
-    camera.projection = CAMERA_PERSPECTIVE;
-
-    // Orbit Camera State
-    float camDist = 600.0f;
-    Vector2 camAngle = { 0.0f, 1.0f }; // Theta (XZ plane), Phi (Y axis)
-    int cameraTargetIndex = 0; // Default to Sun
-
-    float timeScale = 1.0f;
-    bool enableDrag = false;
-    bool showLagrange = false;
-    bool enableRoche = true;
-    bool relativeView = false;
-
-    Body bodies[MAX_BODIES];
-    initBodies(bodies);
-
-    bool creationMode = false;
-    bool isDragging = false;
-    Vector3 dragStartPos = {0};
-    float newBodyMass = 10.0f;
-    float spawnHeight = 0.0f; // For 3D spawning
-    float spawnAngle = 0.0f; // Vertical launch angle in degrees
+    state->camera = (Camera3D){ 0 };
+    state->camera.position = (Vector3){ 0.0f, 400.0f, 400.0f };
+    state->camera.target = (Vector3){ 0.0f, 0.0f, 0.0f };
+    state->camera.up = (Vector3){ 0.0f, 1.0f, 0.0f };
+    state->camera.fovy = 45.0f;
+    state->camera.projection = CAMERA_PERSPECTIVE;
 
     // Lighting Shader
-    Shader lightShader = LoadShaderFromMemory(
+    state->lightShader = LoadShaderFromMemory(
         "#version 330\n"
         "in vec3 vertexPosition;\n"
         "in vec2 vertexTexCoord;\n"
@@ -764,7 +785,7 @@ int main(void)
         "    fragColor = vertexColor;\n"
         "    gl_Position = mvp * vec4(vertexPosition, 1.0);\n"
         "}\n",
-        
+
         "#version 330\n"
         "in vec3 fragPosition;\n"
         "in vec3 fragNormal;\n"
@@ -786,473 +807,479 @@ int main(void)
         "}\n"
     );
 
-    // Get shader locations
-    int lightPosLoc = GetShaderLocation(lightShader, "lightPos");
-    int viewPosLoc = GetShaderLocation(lightShader, "viewPos");
-    int ambientLoc = GetShaderLocation(lightShader, "ambientColor");
-    int lightColorLoc = GetShaderLocation(lightShader, "lightColor");
-    int objectColorLoc = GetShaderLocation(lightShader, "objectColor");
+    state->lightPosLoc = GetShaderLocation(state->lightShader, "lightPos");
+    state->viewPosLoc = GetShaderLocation(state->lightShader, "viewPos");
+    int ambientLoc = GetShaderLocation(state->lightShader, "ambientColor");
+    int lightColorLoc = GetShaderLocation(state->lightShader, "lightColor");
+    state->objectColorLoc = GetShaderLocation(state->lightShader, "objectColor");
 
-    // Set shader constants
     float ambient[4] = { 0.1f, 0.1f, 0.1f, 1.0f };
-    SetShaderValue(lightShader, ambientLoc, ambient, SHADER_UNIFORM_VEC4);
-    float lightColor[4] = { 1.0f, 1.0f, 0.9f, 1.0f }; // Sun color
-    SetShaderValue(lightShader, lightColorLoc, lightColor, SHADER_UNIFORM_VEC4);
+    SetShaderValue(state->lightShader, ambientLoc, ambient, SHADER_UNIFORM_VEC4);
+    float lightColor[4] = { 1.0f, 1.0f, 0.9f, 1.0f };
+    SetShaderValue(state->lightShader, lightColorLoc, lightColor, SHADER_UNIFORM_VEC4);
 
-    // Create Sphere Model for Planets
     Mesh sphereMesh = GenMeshSphere(1.0f, 16, 16);
-    Model sphereModel = LoadModelFromMesh(sphereMesh);
-    sphereModel.materials[0].shader = lightShader;
+    state->sphereModel = LoadModelFromMesh(sphereMesh);
+    state->sphereModel.materials[0].shader = state->lightShader;
+}
 
-    AppState currentState = STATE_SIMULATION;
-    bool shouldExit = false;
+// Handle user input for camera, creation mode, and time scale
+void HandleInput(SimulationState *state, Body bodies[], int screenWidth, int screenHeight) {
+    (void)screenHeight; // Unused parameter
+    if (IsKeyPressed(KEY_ESCAPE)) {
+        if (state->currentState == STATE_SIMULATION) state->currentState = STATE_MENU;
+        else if (state->currentState == STATE_MENU) state->currentState = STATE_SIMULATION;
+        else if (state->currentState == STATE_SETTINGS) state->currentState = STATE_MENU;
+    }
 
-    while (!shouldExit && !WindowShouldClose()) {
-        if (IsKeyPressed(KEY_ESCAPE)) {
-            if (currentState == STATE_SIMULATION) currentState = STATE_MENU;
-            else if (currentState == STATE_MENU) currentState = STATE_SIMULATION;
-            else if (currentState == STATE_SETTINGS) currentState = STATE_MENU;
+    if (state->currentState == STATE_SIMULATION) {
+        if (IsKeyPressed(KEY_N)) {
+            state->creationMode = !state->creationMode;
+            state->spawnHeight = 0.0f;
         }
 
-        if (currentState == STATE_SIMULATION) {
-            if (IsKeyPressed(KEY_N)) {
-                creationMode = !creationMode;
-                spawnHeight = 0.0f;
+        if (!state->creationMode) {
+            if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+                Vector2 delta = GetMouseDelta();
+                state->camAngle.x -= delta.x * 0.005f;
+                state->camAngle.y -= delta.y * 0.005f;
+                if (state->camAngle.y < 0.01f) state->camAngle.y = 0.01f;
+                if (state->camAngle.y > PI - 0.01f) state->camAngle.y = PI - 0.01f;
             }
+            state->camDist -= GetMouseWheelMove() * 50.0f;
+            if (state->camDist < 50.0f) state->camDist = 50.0f;
+        }
 
-            // Camera Controls
-            if (!creationMode) {
-                if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
-                    Vector2 delta = GetMouseDelta();
-                    camAngle.x -= delta.x * 0.005f;
-                    camAngle.y -= delta.y * 0.005f;
-                    if (camAngle.y < 0.01f) camAngle.y = 0.01f;
-                    if (camAngle.y > PI - 0.01f) camAngle.y = PI - 0.01f;
-                }
-                camDist -= GetMouseWheelMove() * 50.0f;
-                if (camDist < 50.0f) camDist = 50.0f;
-            }
+        if (state->creationMode) {
+            int uiWidth = 280;
+            int uiHeight = 200;
+            int uiX = screenWidth - uiWidth - 10;
+            int uiY = 10;
+            Rectangle uiRect = { uiX, uiY, uiWidth, uiHeight };
+            bool mouseOverUI = CheckCollisionPointRec(GetMousePosition(), uiRect);
 
-            // Update Camera Position
-            if (!bodies[cameraTargetIndex].active) cameraTargetIndex = 0;
-            Vector3 targetPos = bodies[cameraTargetIndex].position;
-            camera.target = targetPos;
-            
-            camera.position.x = targetPos.x + camDist * sinf(camAngle.y) * cosf(camAngle.x);
-            camera.position.y = targetPos.y + camDist * cosf(camAngle.y);
-            camera.position.z = targetPos.z + camDist * sinf(camAngle.y) * sinf(camAngle.x);
+            if (!mouseOverUI) {
+                Ray ray = GetMouseRay(GetMousePosition(), state->camera);
 
-            // Update Shader Uniforms
-            SetShaderValue(lightShader, viewPosLoc, &camera.position, SHADER_UNIFORM_VEC3);
-            if (bodies[0].active) {
-                SetShaderValue(lightShader, lightPosLoc, &bodies[0].position, SHADER_UNIFORM_VEC3);
-            }
+                if (fabs(ray.direction.y) > 0.001f) {
+                    float t = (state->spawnHeight - ray.position.y) / ray.direction.y;
+                    if (t >= 0) {
+                        Vector3 mouseWorldPos = Vector3Add(ray.position, Vector3Scale(ray.direction, t));
 
-            if (creationMode) {
-                // Check if mouse is over UI (simple rect check)
-                int uiWidth = 280;
-                int uiHeight = 200;
-                int uiX = screenWidth - uiWidth - 10;
-                int uiY = 10;
-                Rectangle uiRect = { uiX, uiY, uiWidth, uiHeight };
-                bool mouseOverUI = CheckCollisionPointRec(GetMousePosition(), uiRect);
+                        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                            state->isDragging = true;
+                            state->dragStartPos = mouseWorldPos;
+                        }
 
-                if (!mouseOverUI) {
-                    Ray ray = GetMouseRay(GetMousePosition(), camera);
-                    
-                    if (fabs(ray.direction.y) > 0.001f) {
-                        float t = (spawnHeight - ray.position.y) / ray.direction.y;
-                        if (t >= 0) {
-                            Vector3 mouseWorldPos = Vector3Add(ray.position, Vector3Scale(ray.direction, t));
-                            
-                            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-                                isDragging = true;
-                                dragStartPos = mouseWorldPos;
-                            }
+                        if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT) && state->isDragging) {
+                            state->isDragging = false;
+                            for (int i = 0; i < MAX_BODIES; i++) {
+                                if (!bodies[i].active) {
+                                    bodies[i].active = true;
+                                    bodies[i].position = state->dragStartPos;
 
-                            if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT) && isDragging) {
-                                isDragging = false;
-                                for (int i = 0; i < MAX_BODIES; i++) {
-                                    if (!bodies[i].active) {
-                                        bodies[i].active = true;
-                                        bodies[i].position = dragStartPos;
-                                        
-                                        Vector3 dragVec = Vector3Subtract(mouseWorldPos, dragStartPos);
-                                        float speed = Vector3Length(dragVec);
-                                        Vector3 dirXZ = Vector3Normalize(dragVec);
-                                        
-                                        // Calculate 3D velocity based on angle
-                                        float angleRad = spawnAngle * DEG2RAD;
-                                        float vy = speed * sinf(angleRad);
-                                        float vxz = speed * cosf(angleRad);
-                                        
-                                        bodies[i].velocity = (Vector3){ vxz * dirXZ.x, vy, vxz * dirXZ.z };
-                                        
-                                        bodies[i].mass = newBodyMass;
-                                        bodies[i].radius = sqrtf(newBodyMass) * 3.0f;
-                                        if (bodies[i].radius < 5.0f) bodies[i].radius = 5.0f;
-                                        bodies[i].color = (Color){ GetRandomValue(100, 255), GetRandomValue(100, 255), GetRandomValue(100, 255), 255 };
-                                        
-                                        for(int t=0; t<TRAIL_LENGTH; t++) bodies[i].trail[t] = bodies[i].position;
-                                        bodies[i].trailIndex = 0;
-                                        break;
-                                    }
+                                    Vector3 dragVec = Vector3Subtract(mouseWorldPos, state->dragStartPos);
+                                    float speed = Vector3Length(dragVec);
+                                    Vector3 dirXZ = Vector3Normalize(dragVec);
+
+                                    float angleRad = state->spawnAngle * DEG2RAD;
+                                    float vy = speed * sinf(angleRad);
+                                    float vxz = speed * cosf(angleRad);
+
+                                    bodies[i].velocity = (Vector3){ vxz * dirXZ.x, vy, vxz * dirXZ.z };
+
+                                    bodies[i].mass = state->newBodyMass;
+                                    bodies[i].radius = sqrtf(state->newBodyMass) * 3.0f;
+                                    if (bodies[i].radius < 5.0f) bodies[i].radius = 5.0f;
+                                    bodies[i].color = (Color){ GetRandomValue(100, 255), GetRandomValue(100, 255), GetRandomValue(100, 255), 255 };
+
+                                    for(int t=0; t<TRAIL_LENGTH; t++) bodies[i].trail[t] = bodies[i].position;
+                                    bodies[i].trailIndex = 0;
+                                    break;
                                 }
                             }
                         }
                     }
                 }
             }
+        }
 
-            if (IsKeyPressed(KEY_RIGHT)) timeScale *= 2.0f;
-            if (IsKeyPressed(KEY_LEFT)) timeScale *= 0.5f;
-            if (IsKeyPressed(KEY_SPACE)) timeScale = (timeScale == 0.0f) ? 1.0f : 0.0f;
+        if (IsKeyPressed(KEY_RIGHT)) state->timeScale *= 2.0f;
+        if (IsKeyPressed(KEY_LEFT)) state->timeScale *= 0.5f;
+        if (IsKeyPressed(KEY_SPACE)) state->timeScale = (state->timeScale == 0.0f) ? 1.0f : 0.0f;
+    }
+}
 
-            float dt = GetFrameTime() * timeScale;
-            
-            int subSteps = (int)ceilf(fabs(timeScale)); 
-            if (subSteps < 1) subSteps = 1;
-            float subDt = dt / subSteps;
+// Update camera position and run physics simulation (RK4, collisions)
+void UpdatePhysics(SimulationState *state, Body bodies[]) {
+    if (state->currentState != STATE_SIMULATION) return;
 
-            for (int step = 0; step < subSteps; step++) {
-                integrateRK4(bodies, subDt, enableDrag);
-                handleCollisions(bodies);
-                if (enableRoche) checkRocheLimit(bodies);
-            }
+    // Update Camera Position
+    if (!bodies[state->cameraTargetIndex].active) state->cameraTargetIndex = 0;
+    Vector3 targetPos = bodies[state->cameraTargetIndex].position;
+    state->camera.target = targetPos;
 
-            if (timeScale != 0.0f) {
-                for (int i = 0; i < MAX_BODIES; i++) {
-                    if (!bodies[i].active) continue;
-                    bodies[i].trail[bodies[i].trailIndex] = bodies[i].position;
-                    bodies[i].trailIndex = (bodies[i].trailIndex + 1) % TRAIL_LENGTH;
+    state->camera.position.x = targetPos.x + state->camDist * sinf(state->camAngle.y) * cosf(state->camAngle.x);
+    state->camera.position.y = targetPos.y + state->camDist * cosf(state->camAngle.y);
+    state->camera.position.z = targetPos.z + state->camDist * sinf(state->camAngle.y) * sinf(state->camAngle.x);
+
+    // Update Shader Uniforms
+    SetShaderValue(state->lightShader, state->viewPosLoc, &state->camera.position, SHADER_UNIFORM_VEC3);
+    if (bodies[0].active) {
+        SetShaderValue(state->lightShader, state->lightPosLoc, &bodies[0].position, SHADER_UNIFORM_VEC3);
+    }
+
+    float dt = GetFrameTime() * state->timeScale;
+
+    int subSteps = (int)ceilf(fabs(state->timeScale));
+    if (subSteps < 1) subSteps = 1;
+    float subDt = dt / subSteps;
+
+    for (int step = 0; step < subSteps; step++) {
+        integrateRK4(bodies, subDt, state->enableDrag);
+        handleCollisions(bodies);
+        if (state->enableRoche) checkRocheLimit(bodies);
+    }
+
+    if (state->timeScale != 0.0f) {
+        for (int i = 0; i < MAX_BODIES; i++) {
+            if (!bodies[i].active) continue;
+            bodies[i].trail[bodies[i].trailIndex] = bodies[i].position;
+            bodies[i].trailIndex = (bodies[i].trailIndex + 1) % TRAIL_LENGTH;
+        }
+    }
+}
+
+// Render the 3D world (bodies, orbits, grid)
+void Draw3DScene(SimulationState *state, Body bodies[]) {
+    BeginMode3D(state->camera);
+
+    // Custom Grid
+    rlSetClipPlanes(1.0f, 10000.0f);
+
+    int slices = 100;
+    float spacing = 50.0f;
+    float halfSize = slices * spacing / 2.0f;
+    Color gridColor = Fade(LIGHTGRAY, 0.2f);
+    float gridY = -1.0f;
+
+    rlBegin(RL_LINES);
+    rlColor4ub(gridColor.r, gridColor.g, gridColor.b, gridColor.a);
+    for (int i = -slices/2; i <= slices/2; i++) {
+        rlVertex3f(i * spacing, gridY, -halfSize);
+        rlVertex3f(i * spacing, gridY, halfSize);
+        rlVertex3f(-halfSize, gridY, i * spacing);
+        rlVertex3f(halfSize, gridY, i * spacing);
+    }
+    rlEnd();
+
+    if (state->enableDrag && bodies[0].active) {
+        drawAccretionDisk(bodies[0].position);
+    }
+
+    if (state->cameraTargetIndex != 0 && bodies[state->cameraTargetIndex].active) {
+        if (state->relativeView) {
+            int parent = findParentBody(bodies, state->cameraTargetIndex);
+            if (parent != -1) drawOrbit(bodies, state->cameraTargetIndex, parent);
+        } else {
+            drawOrbit(bodies, state->cameraTargetIndex, 0);
+        }
+    }
+
+    for (int i = 0; i < MAX_BODIES; i++) {
+        if (!bodies[i].active) continue;
+        for (int j = 0; j < TRAIL_LENGTH - 1; j++) {
+            int idx = (bodies[i].trailIndex + j) % TRAIL_LENGTH;
+            int nextIdx = (idx + 1) % TRAIL_LENGTH;
+            if (Vector3DistanceSqr(bodies[i].trail[idx], bodies[i].trail[nextIdx]) > 0.001f)
+                DrawLine3D(bodies[i].trail[idx], bodies[i].trail[nextIdx], Fade(bodies[i].color, 0.4f));
+        }
+    }
+
+    for (int i = 0; i < MAX_BODIES; i++) {
+        if (!bodies[i].active) continue;
+
+        if (i == 0) {
+            DrawSphere(bodies[i].position, bodies[i].radius, bodies[i].color);
+        } else {
+            Vector3 scale = { bodies[i].radius, bodies[i].radius, bodies[i].radius };
+            float col[4] = { bodies[i].color.r/255.0f, bodies[i].color.g/255.0f, bodies[i].color.b/255.0f, bodies[i].color.a/255.0f };
+            SetShaderValue(state->lightShader, state->objectColorLoc, col, SHADER_UNIFORM_VEC4);
+            DrawModelEx(state->sphereModel, bodies[i].position, (Vector3){0,1,0}, 0.0f, scale, WHITE);
+        }
+    }
+
+    if (state->creationMode && state->currentState == STATE_SIMULATION) {
+        int uiWidth = 280;
+        int uiHeight = 200;
+        int uiX = GetScreenWidth() - uiWidth - 10;
+        int uiY = 10;
+        Rectangle uiRect = { uiX, uiY, uiWidth, uiHeight };
+
+        Ray ray = GetMouseRay(GetMousePosition(), state->camera);
+        if (fabs(ray.direction.y) > 0.001f) {
+            float t = (state->spawnHeight - ray.position.y) / ray.direction.y;
+            if (t >= 0) {
+                Vector3 mouseWorldPos = Vector3Add(ray.position, Vector3Scale(ray.direction, t));
+
+                if (!CheckCollisionPointRec(GetMousePosition(), uiRect)) {
+                    if (state->isDragging) {
+                        Vector3 dragVec = Vector3Subtract(mouseWorldPos, state->dragStartPos);
+                        float speed = Vector3Length(dragVec);
+                        Vector3 dirXZ = Vector3Normalize(dragVec);
+                        float angleRad = state->spawnAngle * DEG2RAD;
+                        float vy = speed * sinf(angleRad);
+                        float vxz = speed * cosf(angleRad);
+                        Vector3 velocity = { vxz * dirXZ.x, vy, vxz * dirXZ.z };
+
+                        Vector3 endPos = Vector3Add(state->dragStartPos, velocity);
+                        DrawLine3D(state->dragStartPos, endPos, RED);
+                        DrawSphere(state->dragStartPos, 5.0f, GREEN);
+                        DrawLine3D(state->dragStartPos, (Vector3){state->dragStartPos.x, 0, state->dragStartPos.z}, Fade(GREEN, 0.3f));
+                    } else {
+                        DrawSphereWires(mouseWorldPos, sqrtf(state->newBodyMass)*3.0f, 8, 8, Fade(GRAY, 0.5f));
+                    }
                 }
             }
         }
+    }
+
+    if (state->showLagrange) {
+        drawLagrangePoints(bodies);
+    }
+
+    EndMode3D();
+}
+
+// Render the 2D user interface (orbit editor, creation menu, settings)
+void DrawUI(SimulationState *state, Body bodies[], int screenWidth, int screenHeight) {
+    if (state->cameraTargetIndex != 0 && state->currentState == STATE_SIMULATION) {
+        drawOrbitEditor(bodies, state->cameraTargetIndex, screenWidth, screenHeight);
+    }
+
+    if (state->creationMode && state->currentState == STATE_SIMULATION) {
+        int uiWidth = 280;
+        int uiHeight = 200;
+        int uiX = screenWidth - uiWidth - 10;
+        int uiY = 10;
+        Rectangle uiRect = { uiX, uiY, uiWidth, uiHeight };
+
+        DrawRectangleRec(uiRect, Fade(BLACK, 0.8f));
+        DrawRectangleLinesEx(uiRect, 1, DARKGRAY);
+
+        int startY = uiY + 10;
+        int startX = uiX + 10;
+
+        DrawText("PLANET CREATOR", startX, startY, 20, WHITE);
+        startY += 30;
+
+        DrawText(TextFormat("Mass: %.1f", state->newBodyMass), startX, startY, 10, LIGHTGRAY);
+        Rectangle massRect = { startX, startY + 15, 260, 20 };
+        DrawRectangleRec(massRect, DARKGRAY);
+        DrawRectangle(massRect.x, massRect.y, (state->newBodyMass / 100.0f) * massRect.width, massRect.height, BLUE);
+        if (CheckCollisionPointRec(GetMousePosition(), massRect) && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+            float val = (GetMouseX() - massRect.x) / massRect.width;
+            if (val < 0) val = 0;
+            if (val > 1) val = 1;
+            state->newBodyMass = val * 100.0f;
+            if (state->newBodyMass < 1.0f) state->newBodyMass = 1.0f;
+        }
+        startY += 45;
+
+        DrawText(TextFormat("Height Offset: %.1f", state->spawnHeight), startX, startY, 10, LIGHTGRAY);
+        Rectangle heightRect = { startX, startY + 15, 260, 20 };
+        DrawRectangleRec(heightRect, DARKGRAY);
+        float normHeight = (state->spawnHeight + 200.0f) / 400.0f;
+        DrawRectangle(heightRect.x, heightRect.y, normHeight * heightRect.width, heightRect.height, GREEN);
+        if (CheckCollisionPointRec(GetMousePosition(), heightRect) && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+            float val = (GetMouseX() - heightRect.x) / heightRect.width;
+            if (val < 0) val = 0;
+            if (val > 1) val = 1;
+            state->spawnHeight = (val * 400.0f) - 200.0f;
+        }
+        startY += 45;
+
+        DrawText(TextFormat("Launch Angle: %.1f deg", state->spawnAngle), startX, startY, 10, LIGHTGRAY);
+        Rectangle angleRect = { startX, startY + 15, 260, 20 };
+        DrawRectangleRec(angleRect, DARKGRAY);
+        float normAngle = (state->spawnAngle + 90.0f) / 180.0f;
+        DrawRectangle(angleRect.x, angleRect.y, normAngle * angleRect.width, angleRect.height, RED);
+        if (CheckCollisionPointRec(GetMousePosition(), angleRect) && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+            float val = (GetMouseX() - angleRect.x) / angleRect.width;
+            state->spawnAngle = (val * 180.0f) - 90.0f;
+        }
+
+        startY += 40;
+        DrawText("Click & Drag in space to launch", startX, startY, 10, GRAY);
+    }
+
+    if (state->currentState == STATE_SIMULATION) {
+        Ray ray = GetMouseRay(GetMousePosition(), state->camera);
+        int hitIndex = -1;
+        float minHitDist = 1e9f;
+
+        for (int i = 0; i < MAX_BODIES; i++) {
+            if (!bodies[i].active) continue;
+            RayCollision collision = GetRayCollisionSphere(ray, bodies[i].position, bodies[i].radius);
+            if (collision.hit) {
+                if (collision.distance < minHitDist) {
+                    minHitDist = collision.distance;
+                    hitIndex = i;
+                }
+            }
+        }
+
+        if (hitIndex != -1) {
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !state->creationMode) {
+                state->cameraTargetIndex = hitIndex;
+            }
+
+            Body *b = &bodies[hitIndex];
+            float speed = Vector3Length(b->velocity);
+            float distToSun = Vector3Distance(b->position, bodies[0].position);
+            float kineticE = 0.5f * b->mass * speed * speed;
+
+            char infoText[512];
+            sprintf(infoText, "Mass: %.1f\nSpeed: %.1f\nDist to Sun: %.1f\nKinetic E: %.1e\nPos: (%.0f, %.0f, %.0f)",
+                    b->mass, speed, distToSun, kineticE, b->position.x, b->position.y, b->position.z);
+
+            Vector2 screenPos = GetWorldToScreen(b->position, state->camera);
+            DrawRectangle(screenPos.x + 20, screenPos.y - 60, 220, 110, Fade(DARKGRAY, 0.9f));
+            DrawRectangleLines(screenPos.x + 20, screenPos.y - 60, 220, 110, WHITE);
+            DrawText(infoText, screenPos.x + 25, screenPos.y - 55, 10, WHITE);
+        }
+    }
+
+    DrawFPS(10, 10);
+    DrawText(TextFormat("Time Scale: %.2fx", state->timeScale), 10, 30, 20, WHITE);
+    DrawText("RK4 | N-Body | Collisions | Relativistic Precession", 10, 50, 20, GREEN);
+
+    int statusY = 70;
+    int x = 10;
+
+    DrawText("Roche Limit:", x, statusY, 20, LIGHTGRAY);
+    x += MeasureText("Roche Limit: ", 20);
+    DrawText(state->enableRoche ? "ON" : "OFF", x, statusY, 20, state->enableRoche ? GREEN : RED);
+    x += MeasureText("ON ", 20) + 10;
+
+    DrawText("| Accretion:", x, statusY, 20, LIGHTGRAY);
+    x += MeasureText("| Accretion: ", 20);
+    DrawText(state->enableDrag ? "ON" : "OFF", x, statusY, 20, state->enableDrag ? GREEN : RED);
+    x += MeasureText("ON ", 20) + 10;
+
+    DrawText("| Lagrange:", x, statusY, 20, LIGHTGRAY);
+    x += MeasureText("| Lagrange: ", 20);
+    DrawText(state->showLagrange ? "ON" : "OFF", x, statusY, 20, state->showLagrange ? GREEN : RED);
+    x += MeasureText("ON ", 20) + 10;
+
+    DrawText("| Create (N):", x, statusY, 20, LIGHTGRAY);
+    x += MeasureText("| Create (N): ", 20);
+    DrawText(state->creationMode ? "ON" : "OFF", x, statusY, 20, state->creationMode ? GREEN : RED);
+
+    x += MeasureText("ON ", 20) + 20;
+    Rectangle btnRel = { x, statusY - 2, 140, 24 };
+    bool hoverRel = CheckCollisionPointRec(GetMousePosition(), btnRel);
+    DrawRectangleRec(btnRel, hoverRel ? GRAY : DARKGRAY);
+    DrawText("Rel. View", btnRel.x + 10, btnRel.y + 2, 20, state->relativeView ? GREEN : WHITE);
+    if (hoverRel && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) state->relativeView = !state->relativeView;
+
+    if (state->creationMode && state->currentState == STATE_SIMULATION) {
+        DrawText(TextFormat("Creation Mode: Click & Drag to launch. Scroll: Mass %.1f", state->newBodyMass), 10, 100, 20, YELLOW);
+    }
+
+    if (state->currentState == STATE_MENU) {
+        DrawRectangle(0, 0, screenWidth, screenHeight, Fade(BLACK, 0.7f));
+        int menuX = screenWidth / 2 - 100;
+        int menuY = screenHeight / 2 - 100;
+
+        DrawText("PAUSED", screenWidth/2 - MeasureText("PAUSED", 40)/2, menuY - 60, 40, WHITE);
+
+        Vector2 mouse = GetMousePosition();
+
+        Rectangle btnResume = { menuX, menuY, 200, 40 };
+        bool hoverResume = CheckCollisionPointRec(mouse, btnResume);
+        DrawRectangleRec(btnResume, hoverResume ? GRAY : DARKGRAY);
+        DrawText("Resume", btnResume.x + 20, btnResume.y + 10, 20, WHITE);
+        if (hoverResume && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) state->currentState = STATE_SIMULATION;
+
+        Rectangle btnReset = { menuX, menuY + 50, 200, 40 };
+        bool hoverReset = CheckCollisionPointRec(mouse, btnReset);
+        DrawRectangleRec(btnReset, hoverReset ? GRAY : DARKGRAY);
+        DrawText("Reset", btnReset.x + 20, btnReset.y + 10, 20, WHITE);
+        if (hoverReset && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            initBodies(bodies);
+            state->currentState = STATE_SIMULATION;
+        }
+
+        Rectangle btnSettings = { menuX, menuY + 100, 200, 40 };
+        bool hoverSettings = CheckCollisionPointRec(mouse, btnSettings);
+        DrawRectangleRec(btnSettings, hoverSettings ? GRAY : DARKGRAY);
+        DrawText("Settings", btnSettings.x + 20, btnSettings.y + 10, 20, WHITE);
+        if (hoverSettings && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) state->currentState = STATE_SETTINGS;
+
+        Rectangle btnQuit = { menuX, menuY + 150, 200, 40 };
+        bool hoverQuit = CheckCollisionPointRec(mouse, btnQuit);
+        DrawRectangleRec(btnQuit, hoverQuit ? RED : MAROON);
+        DrawText("Quit", btnQuit.x + 20, btnQuit.y + 10, 20, WHITE);
+        if (hoverQuit && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) state->shouldExit = true;
+    }
+    else if (state->currentState == STATE_SETTINGS) {
+        DrawRectangle(0, 0, screenWidth, screenHeight, Fade(BLACK, 0.8f));
+        int menuX = screenWidth / 2 - 150;
+        int menuY = screenHeight / 2 - 100;
+
+        DrawText("SETTINGS", screenWidth/2 - MeasureText("SETTINGS", 40)/2, menuY - 60, 40, WHITE);
+        Vector2 mouse = GetMousePosition();
+
+        Rectangle btnRoche = { menuX, menuY, 300, 40 };
+        bool hoverRoche = CheckCollisionPointRec(mouse, btnRoche);
+        DrawRectangleRec(btnRoche, hoverRoche ? GRAY : DARKGRAY);
+        DrawText(TextFormat("Roche Limit: %s", state->enableRoche ? "ON" : "OFF"), btnRoche.x + 20, btnRoche.y + 10, 20, state->enableRoche ? GREEN : RED);
+        if (hoverRoche && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) state->enableRoche = !state->enableRoche;
+
+        Rectangle btnDrag = { menuX, menuY + 50, 300, 40 };
+        bool hoverDrag = CheckCollisionPointRec(mouse, btnDrag);
+        DrawRectangleRec(btnDrag, hoverDrag ? GRAY : DARKGRAY);
+        DrawText(TextFormat("Accretion Drag: %s", state->enableDrag ? "ON" : "OFF"), btnDrag.x + 20, btnDrag.y + 10, 20, state->enableDrag ? GREEN : RED);
+        if (hoverDrag && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) state->enableDrag = !state->enableDrag;
+
+        Rectangle btnLag = { menuX, menuY + 100, 300, 40 };
+        bool hoverLag = CheckCollisionPointRec(mouse, btnLag);
+        DrawRectangleRec(btnLag, hoverLag ? GRAY : DARKGRAY);
+        DrawText(TextFormat("Lagrange Points: %s", state->showLagrange ? "ON" : "OFF"), btnLag.x + 20, btnLag.y + 10, 20, state->showLagrange ? GREEN : RED);
+        if (hoverLag && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) state->showLagrange = !state->showLagrange;
+
+        Rectangle btnBack = { menuX, menuY + 160, 300, 40 };
+        bool hoverBack = CheckCollisionPointRec(mouse, btnBack);
+        DrawRectangleRec(btnBack, hoverBack ? GRAY : DARKGRAY);
+        DrawText("Back", btnBack.x + 120, btnBack.y + 10, 20, WHITE);
+        if (hoverBack && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) state->currentState = STATE_MENU;
+    }
+}
+
+int main(void)
+{
+    const int screenWidth = 1200;
+    const int screenHeight = 800;
+
+    InitWindow(screenWidth, screenHeight, "Solar System Simulation 3D - Solaray");
+    SetTargetFPS(60);
+    SetExitKey(KEY_NULL);
+
+    SimulationState state;
+    Body bodies[MAX_BODIES];
+    initBodies(bodies);
+    InitSimulation(&state);
+
+    while (!state.shouldExit && !WindowShouldClose()) {
+        HandleInput(&state, bodies, screenWidth, screenHeight);
+        UpdatePhysics(&state, bodies);
 
         BeginDrawing();
         ClearBackground(BLACK);
-        
-        BeginMode3D(camera);
-        
-        // Custom Grid
-        rlSetClipPlanes(1.0f, 10000.0f); // Increase draw distance
-        
-        int slices = 100;
-        float spacing = 50.0f;
-        float halfSize = slices * spacing / 2.0f;
-        Color gridColor = Fade(LIGHTGRAY, 0.2f); // 20% visible
-        float gridY = -1.0f; // Slightly below 0 to avoid z-fighting with accretion disk
 
-        rlBegin(RL_LINES);
-        rlColor4ub(gridColor.r, gridColor.g, gridColor.b, gridColor.a);
-        for (int i = -slices/2; i <= slices/2; i++) {
-            // Lines parallel to Z axis
-            rlVertex3f(i * spacing, gridY, -halfSize);
-            rlVertex3f(i * spacing, gridY, halfSize);
-
-            // Lines parallel to X axis
-            rlVertex3f(-halfSize, gridY, i * spacing);
-            rlVertex3f(halfSize, gridY, i * spacing);
-        }
-        rlEnd();
-
-        if (enableDrag && bodies[0].active) {
-            drawAccretionDisk(bodies[0].position);
-        }
-
-        if (cameraTargetIndex != 0 && bodies[cameraTargetIndex].active) {
-            if (relativeView) {
-                int parent = findParentBody(bodies, cameraTargetIndex);
-                if (parent != -1) drawOrbit(bodies, cameraTargetIndex, parent);
-            } else {
-                drawOrbit(bodies, cameraTargetIndex, 0);
-            }
-        }
-
-        for (int i = 0; i < MAX_BODIES; i++) {
-            if (!bodies[i].active) continue;
-            for (int j = 0; j < TRAIL_LENGTH - 1; j++) {
-                int idx = (bodies[i].trailIndex + j) % TRAIL_LENGTH;
-                int nextIdx = (idx + 1) % TRAIL_LENGTH;
-                if (Vector3DistanceSqr(bodies[i].trail[idx], bodies[i].trail[nextIdx]) > 0.001f)
-                    DrawLine3D(bodies[i].trail[idx], bodies[i].trail[nextIdx], Fade(bodies[i].color, 0.4f));
-            }
-        }
-        
-        for (int i = 0; i < MAX_BODIES; i++) {
-            if (!bodies[i].active) continue;
-            
-            if (i == 0) {
-                // Sun is unlit
-                DrawSphere(bodies[i].position, bodies[i].radius, bodies[i].color);
-            } else {
-                // Planets are lit
-                Vector3 scale = { bodies[i].radius, bodies[i].radius, bodies[i].radius };
-                float col[4] = { bodies[i].color.r/255.0f, bodies[i].color.g/255.0f, bodies[i].color.b/255.0f, bodies[i].color.a/255.0f };
-                SetShaderValue(lightShader, objectColorLoc, col, SHADER_UNIFORM_VEC4);
-                DrawModelEx(sphereModel, bodies[i].position, (Vector3){0,1,0}, 0.0f, scale, WHITE);
-            }
-        }
-
-        if (creationMode && currentState == STATE_SIMULATION) {
-            // 3D Visualization of Drag
-            int uiWidth = 280;
-            int uiHeight = 200;
-            int uiX = screenWidth - uiWidth - 10;
-            int uiY = 10;
-            Rectangle uiRect = { uiX, uiY, uiWidth, uiHeight };
-
-            Ray ray = GetMouseRay(GetMousePosition(), camera);
-            if (fabs(ray.direction.y) > 0.001f) {
-                float t = (spawnHeight - ray.position.y) / ray.direction.y;
-                if (t >= 0) {
-                    Vector3 mouseWorldPos = Vector3Add(ray.position, Vector3Scale(ray.direction, t));
-                    
-                    if (!CheckCollisionPointRec(GetMousePosition(), uiRect)) {
-                        if (isDragging) {
-                            // Calculate end point based on angle
-                            Vector3 dragVec = Vector3Subtract(mouseWorldPos, dragStartPos);
-                            float speed = Vector3Length(dragVec);
-                            Vector3 dirXZ = Vector3Normalize(dragVec);
-                            float angleRad = spawnAngle * DEG2RAD;
-                            float vy = speed * sinf(angleRad);
-                            float vxz = speed * cosf(angleRad);
-                            Vector3 velocity = { vxz * dirXZ.x, vy, vxz * dirXZ.z };
-                            
-                            // Draw trajectory preview (simple line)
-                            Vector3 endPos = Vector3Add(dragStartPos, velocity); // Just a visual vector
-                            DrawLine3D(dragStartPos, endPos, RED);
-                            DrawSphere(dragStartPos, 5.0f, GREEN);
-                            
-                            // Draw height reference
-                            DrawLine3D(dragStartPos, (Vector3){dragStartPos.x, 0, dragStartPos.z}, Fade(GREEN, 0.3f));
-                        } else {
-                            DrawSphereWires(mouseWorldPos, sqrtf(newBodyMass)*3.0f, 8, 8, Fade(GRAY, 0.5f));
-                        }
-                    }
-                }
-            }
-        }
-
-        if (showLagrange) {
-            drawLagrangePoints(bodies);
-        }
-        
-        EndMode3D();
-        
-        // UI and 2D Overlays
-        if (cameraTargetIndex != 0 && currentState == STATE_SIMULATION) {
-            drawOrbitEditor(bodies, cameraTargetIndex, screenWidth, screenHeight);
-        }
-
-        if (creationMode && currentState == STATE_SIMULATION) {
-            int uiWidth = 280;
-            int uiHeight = 200;
-            int uiX = screenWidth - uiWidth - 10;
-            int uiY = 10;
-            Rectangle uiRect = { uiX, uiY, uiWidth, uiHeight };
-            
-            DrawRectangleRec(uiRect, Fade(BLACK, 0.8f));
-            DrawRectangleLinesEx(uiRect, 1, DARKGRAY);
-            
-            int startY = uiY + 10;
-            int startX = uiX + 10;
-            
-            DrawText("PLANET CREATOR", startX, startY, 20, WHITE);
-            startY += 30;
-
-            // Mass
-            DrawText(TextFormat("Mass: %.1f", newBodyMass), startX, startY, 10, LIGHTGRAY);
-            Rectangle massRect = { startX, startY + 15, 260, 20 };
-            DrawRectangleRec(massRect, DARKGRAY);
-            DrawRectangle(massRect.x, massRect.y, (newBodyMass / 100.0f) * massRect.width, massRect.height, BLUE);
-            if (CheckCollisionPointRec(GetMousePosition(), massRect) && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
-                float val = (GetMouseX() - massRect.x) / massRect.width;
-                if (val < 0) val = 0; 
-                if (val > 1) val = 1;
-                newBodyMass = val * 100.0f;
-                if (newBodyMass < 1.0f) newBodyMass = 1.0f;
-            }
-            startY += 45;
-
-            // Height
-            DrawText(TextFormat("Height Offset: %.1f", spawnHeight), startX, startY, 10, LIGHTGRAY);
-            Rectangle heightRect = { startX, startY + 15, 260, 20 };
-            DrawRectangleRec(heightRect, DARKGRAY);
-            float normHeight = (spawnHeight + 200.0f) / 400.0f;
-            DrawRectangle(heightRect.x, heightRect.y, normHeight * heightRect.width, heightRect.height, GREEN);
-            if (CheckCollisionPointRec(GetMousePosition(), heightRect) && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
-                float val = (GetMouseX() - heightRect.x) / heightRect.width;
-                if (val < 0) val = 0; 
-                if (val > 1) val = 1;
-                spawnHeight = (val * 400.0f) - 200.0f;
-            }
-            startY += 45;
-
-            // Angle
-            DrawText(TextFormat("Launch Angle: %.1f deg", spawnAngle), startX, startY, 10, LIGHTGRAY);
-            Rectangle angleRect = { startX, startY + 15, 260, 20 };
-            DrawRectangleRec(angleRect, DARKGRAY);
-            float normAngle = (spawnAngle + 90.0f) / 180.0f;
-            DrawRectangle(angleRect.x, angleRect.y, normAngle * angleRect.width, angleRect.height, RED);
-            if (CheckCollisionPointRec(GetMousePosition(), angleRect) && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
-                float val = (GetMouseX() - angleRect.x) / angleRect.width;
-                if (val < 0) val = 0; 
-                if (val > 1) val = 1;
-                spawnAngle = (val * 180.0f) - 90.0f;
-            }
-            
-            // Instructions
-            startY += 40;
-            DrawText("Click & Drag in space to launch", startX, startY, 10, GRAY);
-        }
-
-        // ... (Keep existing UI logic mostly, but remove 2D specific hover for now or adapt it)
-        // Adapting hover to 3D:
-        if (currentState == STATE_SIMULATION) {
-            Ray ray = GetMouseRay(GetMousePosition(), camera);
-            int hitIndex = -1;
-            float minHitDist = 1e9f;
-
-            for (int i = 0; i < MAX_BODIES; i++) {
-                if (!bodies[i].active) continue;
-                RayCollision collision = GetRayCollisionSphere(ray, bodies[i].position, bodies[i].radius);
-                if (collision.hit) {
-                    if (collision.distance < minHitDist) {
-                        minHitDist = collision.distance;
-                        hitIndex = i;
-                    }
-                }
-            }
-
-            if (hitIndex != -1) {
-                if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !creationMode) {
-                    cameraTargetIndex = hitIndex;
-                }
-
-                Body *b = &bodies[hitIndex];
-                float speed = Vector3Length(b->velocity);
-                float distToSun = Vector3Distance(b->position, bodies[0].position);
-                float kineticE = 0.5f * b->mass * speed * speed;
-                
-                char infoText[512];
-                sprintf(infoText, "Mass: %.1f\nSpeed: %.1f\nDist to Sun: %.1f\nKinetic E: %.1e\nPos: (%.0f, %.0f, %.0f)", 
-                        b->mass, speed, distToSun, kineticE, b->position.x, b->position.y, b->position.z);
-                
-                Vector2 screenPos = GetWorldToScreen(b->position, camera);
-                DrawRectangle(screenPos.x + 20, screenPos.y - 60, 220, 110, Fade(DARKGRAY, 0.9f));
-                DrawRectangleLines(screenPos.x + 20, screenPos.y - 60, 220, 110, WHITE);
-                DrawText(infoText, screenPos.x + 25, screenPos.y - 55, 10, WHITE);
-            }
-        }
-
-        // ... (Rest of UI)
-        DrawFPS(10, 10);
-        DrawText(TextFormat("Time Scale: %.2fx", timeScale), 10, 30, 20, WHITE);
-        DrawText("RK4 | N-Body | Collisions | Relativistic Precession", 10, 50, 20, GREEN);
-        
-        int statusY = 70;
-        int x = 10;
-        
-        DrawText("Roche Limit:", x, statusY, 20, LIGHTGRAY);
-        x += MeasureText("Roche Limit: ", 20);
-        DrawText(enableRoche ? "ON" : "OFF", x, statusY, 20, enableRoche ? GREEN : RED);
-        x += MeasureText("ON ", 20) + 10;
-        
-        DrawText("| Accretion:", x, statusY, 20, LIGHTGRAY);
-        x += MeasureText("| Accretion: ", 20);
-        DrawText(enableDrag ? "ON" : "OFF", x, statusY, 20, enableDrag ? GREEN : RED);
-        x += MeasureText("ON ", 20) + 10;
-
-        DrawText("| Lagrange:", x, statusY, 20, LIGHTGRAY);
-        x += MeasureText("| Lagrange: ", 20);
-        DrawText(showLagrange ? "ON" : "OFF", x, statusY, 20, showLagrange ? GREEN : RED);
-        x += MeasureText("ON ", 20) + 10;
-
-        DrawText("| Create (N):", x, statusY, 20, LIGHTGRAY);
-        x += MeasureText("| Create (N): ", 20);
-        DrawText(creationMode ? "ON" : "OFF", x, statusY, 20, creationMode ? GREEN : RED);
-        
-        x += MeasureText("ON ", 20) + 20;
-        Rectangle btnRel = { x, statusY - 2, 140, 24 };
-        bool hoverRel = CheckCollisionPointRec(GetMousePosition(), btnRel);
-        DrawRectangleRec(btnRel, hoverRel ? GRAY : DARKGRAY);
-        DrawText("Rel. View", btnRel.x + 10, btnRel.y + 2, 20, relativeView ? GREEN : WHITE);
-        if (hoverRel && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) relativeView = !relativeView;
-        
-        if (creationMode && currentState == STATE_SIMULATION) {
-            DrawText(TextFormat("Creation Mode: Click & Drag to launch. Scroll: Mass %.1f", newBodyMass), 10, 100, 20, YELLOW);
-        }
-
-        // Menu and Settings (Same as before)
-        if (currentState == STATE_MENU) {
-            DrawRectangle(0, 0, screenWidth, screenHeight, Fade(BLACK, 0.7f));
-            int menuX = screenWidth / 2 - 100;
-            int menuY = screenHeight / 2 - 100;
-            
-            DrawText("PAUSED", screenWidth/2 - MeasureText("PAUSED", 40)/2, menuY - 60, 40, WHITE);
-
-            Vector2 mouse = GetMousePosition();
-            
-            Rectangle btnResume = { menuX, menuY, 200, 40 };
-            bool hoverResume = CheckCollisionPointRec(mouse, btnResume);
-            DrawRectangleRec(btnResume, hoverResume ? GRAY : DARKGRAY);
-            DrawText("Resume", btnResume.x + 20, btnResume.y + 10, 20, WHITE);
-            if (hoverResume && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) currentState = STATE_SIMULATION;
-
-            Rectangle btnReset = { menuX, menuY + 50, 200, 40 };
-            bool hoverReset = CheckCollisionPointRec(mouse, btnReset);
-            DrawRectangleRec(btnReset, hoverReset ? GRAY : DARKGRAY);
-            DrawText("Reset", btnReset.x + 20, btnReset.y + 10, 20, WHITE);
-            if (hoverReset && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-                initBodies(bodies);
-                currentState = STATE_SIMULATION;
-            }
-
-            Rectangle btnSettings = { menuX, menuY + 100, 200, 40 };
-            bool hoverSettings = CheckCollisionPointRec(mouse, btnSettings);
-            DrawRectangleRec(btnSettings, hoverSettings ? GRAY : DARKGRAY);
-            DrawText("Settings", btnSettings.x + 20, btnSettings.y + 10, 20, WHITE);
-            if (hoverSettings && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) currentState = STATE_SETTINGS;
-
-            Rectangle btnQuit = { menuX, menuY + 150, 200, 40 };
-            bool hoverQuit = CheckCollisionPointRec(mouse, btnQuit);
-            DrawRectangleRec(btnQuit, hoverQuit ? RED : MAROON);
-            DrawText("Quit", btnQuit.x + 20, btnQuit.y + 10, 20, WHITE);
-            if (hoverQuit && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) shouldExit = true;
-        }
-        else if (currentState == STATE_SETTINGS) {
-            DrawRectangle(0, 0, screenWidth, screenHeight, Fade(BLACK, 0.8f));
-            int menuX = screenWidth / 2 - 150;
-            int menuY = screenHeight / 2 - 100;
-            
-            DrawText("SETTINGS", screenWidth/2 - MeasureText("SETTINGS", 40)/2, menuY - 60, 40, WHITE);
-            Vector2 mouse = GetMousePosition();
-
-            Rectangle btnRoche = { menuX, menuY, 300, 40 };
-            bool hoverRoche = CheckCollisionPointRec(mouse, btnRoche);
-            DrawRectangleRec(btnRoche, hoverRoche ? GRAY : DARKGRAY);
-            DrawText(TextFormat("Roche Limit: %s", enableRoche ? "ON" : "OFF"), btnRoche.x + 20, btnRoche.y + 10, 20, enableRoche ? GREEN : RED);
-            if (hoverRoche && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) enableRoche = !enableRoche;
-
-            Rectangle btnDrag = { menuX, menuY + 50, 300, 40 };
-            bool hoverDrag = CheckCollisionPointRec(mouse, btnDrag);
-            DrawRectangleRec(btnDrag, hoverDrag ? GRAY : DARKGRAY);
-            DrawText(TextFormat("Accretion Drag: %s", enableDrag ? "ON" : "OFF"), btnDrag.x + 20, btnDrag.y + 10, 20, enableDrag ? GREEN : RED);
-            if (hoverDrag && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) enableDrag = !enableDrag;
-
-            Rectangle btnLag = { menuX, menuY + 100, 300, 40 };
-            bool hoverLag = CheckCollisionPointRec(mouse, btnLag);
-            DrawRectangleRec(btnLag, hoverLag ? GRAY : DARKGRAY);
-            DrawText(TextFormat("Lagrange Points: %s", showLagrange ? "ON" : "OFF"), btnLag.x + 20, btnLag.y + 10, 20, showLagrange ? GREEN : RED);
-            if (hoverLag && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) showLagrange = !showLagrange;
-
-            Rectangle btnBack = { menuX, menuY + 160, 300, 40 };
-            bool hoverBack = CheckCollisionPointRec(mouse, btnBack);
-            DrawRectangleRec(btnBack, hoverBack ? GRAY : DARKGRAY);
-            DrawText("Back", btnBack.x + 120, btnBack.y + 10, 20, WHITE);
-            if (hoverBack && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) currentState = STATE_MENU;
-        }
+        Draw3DScene(&state, bodies);
+        DrawUI(&state, bodies, screenWidth, screenHeight);
 
         EndDrawing();
     }
