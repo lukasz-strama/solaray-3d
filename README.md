@@ -2,7 +2,7 @@
 
 Educational project designed to explore numerical integration methods and astrophysical concepts in a fully interactive 3D environment. It is not a scientifically accurate simulator of the real solar system, but rather a sandbox for visualizing mathematical models of gravity, orbital mechanics, and celestial phenomena. Made also to learn `raylib`. 
 
-Based on [2D version](github.com/lukasz-strama/solaray).
+Based on [2D version](https://github.com/lukasz-strama/solaray).
 
 ![Program Demo](demo.gif)
 
