@@ -1,6 +1,6 @@
-# Solar System Simulation (N-Body RK4)
+# Solar System Simulation 3D (N-Body RK4)
 
-Educational project designed to explore numerical integration methods and astrophysical concepts in a 2D environment. It is not a scientifically accurate simulator of the real solar system, but rather a sandbox for visualizing mathematical models of gravity, orbital mechanics, and celestial phenomena. Made also to learn `raylib`.
+Educational project designed to explore numerical integration methods and astrophysical concepts in a fully interactive 3D environment. It is not a scientifically accurate simulator of the real solar system, but rather a sandbox for visualizing mathematical models of gravity, orbital mechanics, and celestial phenomena. Made also to learn `raylib`. 2D version [here](github.com/lukasz-strama/solaray).
 
 ![Program Demo](demo.gif)
 
@@ -32,7 +32,7 @@ Where:
 *   $c$ is the speed of light (scaled for simulation visibility)
 
 ### 3. Collisions (Volume Conservation)
-Collisions are perfectly inelastic. When two bodies merge, momentum is conserved, and the new radius is calculated assuming **Volume Conservation** (constant density), rather than Area Conservation.
+Collisions are perfectly inelastic. When two bodies merge, momentum is conserved, and the new radius is calculated assuming **Volume Conservation** (constant density).
 
 $$ r_{new} = \sqrt[3]{r_1^3 + r_2^3} $$
 
@@ -54,32 +54,38 @@ $$
 
 ## Assumptions & Simplifications
 
-*   **2D Plane**: The simulation ignores the Z-axis. All interactions occur on a flat plane.
+*   **3D Space**: The simulation runs in a full 3D coordinate system. Orbits can have inclination and bodies can move freely on the Y-axis.
 *   **Scaled Constants**: $G$ and $c$ (speed of light) are arbitrary game units chosen for visual clarity, not SI units.
-*   **Perfect Spheres**: All bodies are treated as point masses for gravity and circles for collisions.
-*   **Lagrange Points**: Calculated analytically for the Sun and the most massive planet only. Perturbations from other bodies are ignored in the L-point visualization.
+*   **Perfect Spheres**: All bodies are treated as point masses for gravity and spheres for collisions.
+*   **Lagrange Points**: Calculated analytically for the Sun and the most massive planet, then projected onto the orbital plane for visualization.
 
 ## Current Status
 
 ### Working Correctly
 *   **N-Body Gravity**: All bodies attract all other bodies $O(N^2)$.
-*   **Orbital Stability**: RK4 maintains stable orbits for long durations under normal time scales.
-*   **Precession**: Relativistic apsidal precession is observable for close, fast orbits.
-*   **Lagrange Points**: L1-L5 are correctly visualized relative to the largest planet.
-*   **Creation Mode**: User can inject new bodies with specific velocity vectors.
+*   **3D Orbital Mechanics**: Support for inclined orbits and 3D velocity vectors.
+*   **Orbital Stability**: RK4 maintains stable orbits for long durations.
+*   **Precession**: Relativistic apsidal precession is observable.
+*   **Creation Mode**: User can inject new bodies with specific mass, height offset, and launch angle.
+*   **Orbit Editor**: Real-time adjustment of orbital parameters (Eccentricity, Semi-Major Axis, Inclination).
 
 ### Limitations / Known Issues
 *   **Scale**: Distances and masses are not to scale with the real solar system.
-*   **Fragmentation Physics**: When the Roche limit is breached, bodies spawn random fragments. This is a visual approximation, not a physics-based debris simulation.
+*   **Fragmentation Physics**: When the Roche limit is breached, bodies spawn random fragments. This is a visual approximation.
 *   **Performance**: The $O(N^2)$ complexity limits the simulation to approximately 500 bodies before frame rate drops on average hardware.
+*   **No Atmospheric Effects**: Drag is a simple linear model; no complex fluid dynamics are simulated.
 
 ## Controls
 
-*   **Mouse Wheel**: Zoom / Change Mass (in Creation Mode)
-*   **Right/Middle Mouse**: Pan Camera
+*   **Mouse Wheel**: Zoom Camera
+*   **Right Mouse Drag**: Rotate Camera
+*   **Middle Mouse Drag**: Pan Camera
+*   **Left Click (on Body)**: Select/Focus Camera on Body
 *   **Arrow Keys**: Change Time Scale
 *   **Space**: Pause/Resume Simulation
-*   **N**: Toggle Creation Mode (Click & Drag to spawn)
+*   **N**: Toggle Creation Mode
+    *   **Left Click & Drag**: Launch new body
+    *   **UI Sliders**: Adjust Mass, Height Offset, Launch Angle
 *   **ESC**: Open Menu
 
 ## Build

@@ -133,6 +133,7 @@ void integrateRK4(Body bodies[], float dt, bool enableDrag) {
     // Update
     for(int i=0; i<MAX_BODIES; i++) {
         if (!bodies[i].active) continue;
+        if (i == 0) continue; // Sun is stationary
         
         Vector3 dPos = Vector3Scale(Vector3Add(Vector3Add(k1[i].dPosition, Vector3Scale(k2[i].dPosition, 2.0f)), Vector3Add(Vector3Scale(k3[i].dPosition, 2.0f), k4[i].dPosition)), dt / 6.0f);
         Vector3 dVel = Vector3Scale(Vector3Add(Vector3Add(k1[i].dVelocity, Vector3Scale(k2[i].dVelocity, 2.0f)), Vector3Add(Vector3Scale(k3[i].dVelocity, 2.0f), k4[i].dVelocity)), dt / 6.0f);
@@ -158,13 +159,19 @@ void handleCollisions(Body bodies[]) {
                 Vector3 totalMomentum = Vector3Add(momentum1, momentum2);
                 float totalMass = b1->mass + b2->mass;
 
-                b1->velocity = Vector3Scale(totalMomentum, 1.0f / totalMass);
-                
-                // Weighted position
-                b1->position = Vector3Scale(Vector3Add(Vector3Scale(b1->position, b1->mass), Vector3Scale(b2->position, b2->mass)), 1.0f/totalMass);
+                if (i == 0) {
+                    // Sun absorbs body, but stays stationary
+                    b1->mass = totalMass;
+                    b1->radius = cbrtf(powf(b1->radius, 3.0f) + powf(b2->radius, 3.0f));
+                } else {
+                    b1->velocity = Vector3Scale(totalMomentum, 1.0f / totalMass);
+                    
+                    // Weighted position
+                    b1->position = Vector3Scale(Vector3Add(Vector3Scale(b1->position, b1->mass), Vector3Scale(b2->position, b2->mass)), 1.0f/totalMass);
 
-                b1->radius = cbrtf(powf(b1->radius, 3.0f) + powf(b2->radius, 3.0f));
-                b1->mass = totalMass;
+                    b1->radius = cbrtf(powf(b1->radius, 3.0f) + powf(b2->radius, 3.0f));
+                    b1->mass = totalMass;
+                }
                 
                 b2->active = false;
             }
@@ -286,6 +293,39 @@ void drawLagrangePoints(Body bodies[]) {
     DrawSphere(l5, lRadius, lColor); 
 }
 
+// Helper to create a body in a stable circular orbit around a parent
+Body createOrbitingBody(Body parent, float orbitRadius, float angleDeg, float mass, float radius, Color color) {
+    float theta = angleDeg * DEG2RAD;
+    
+    // Position offset
+    float dx = orbitRadius * cosf(theta);
+    float dz = orbitRadius * sinf(theta);
+    
+    Vector3 position = Vector3Add(parent.position, (Vector3){ dx, 0.0f, dz });
+    
+    // Orbital velocity (circular) v = sqrt(GM / r)
+    float vMag = sqrtf((G * parent.mass) / orbitRadius);
+    
+    // Velocity vector (tangent to circle)
+    // If pos is (cos, sin), vel is (-sin, cos) for counter-clockwise orbit
+    float vx = -vMag * sinf(theta);
+    float vz = vMag * cosf(theta);
+    
+    Vector3 velocity = Vector3Add(parent.velocity, (Vector3){ vx, 0.0f, vz });
+    
+    Body b = {0};
+    b.position = position;
+    b.velocity = velocity;
+    b.mass = mass;
+    b.radius = radius;
+    b.color = color;
+    b.active = true;
+    b.trailIndex = 0;
+    for(int i=0; i<TRAIL_LENGTH; i++) b.trail[i] = position;
+    
+    return b;
+}
+
 void initBodies(Body bodies[]) {
     for(int i=0; i<MAX_BODIES; i++) bodies[i].active = false;
 
@@ -298,48 +338,18 @@ void initBodies(Body bodies[]) {
         .color = YELLOW,
         .active = true
     };
+    
     // Planet 1
-    bodies[1] = (Body){
-        .position = { 200.0f, 0.0f, 0.0f },
-        .velocity = { 0.0f, 0.0f, 100.0f }, // Orbit in XZ plane
-        .mass = 10.0f,
-        .radius = 10.0f,
-        .color = BLUE,
-        .active = true
-    };
+    bodies[1] = createOrbitingBody(bodies[0], 200.0f, 0.0f, 10.0f, 10.0f, BLUE);
+    
     // Planet 2
-    bodies[2] = (Body){
-        .position = { 300.0f, 0.0f, 0.0f },
-        .velocity = { 0.0f, 0.0f, 81.6f },
-        .mass = 8.0f,
-        .radius = 8.0f,
-        .color = RED,
-        .active = true
-    };
-    // Planet 3
-    bodies[3] = (Body){
-        .position = { 450.0f, 0.0f, 0.0f },
-        .velocity = { 0.0f, 0.0f, 68.3f },
-        .mass = 500.0f,
-        .radius = 20.0f,
-        .color = ORANGE,
-        .active = true
-    };
-
-    // Moon of Planet 3 (Orange)
-    // Planet Mass 500 -> Hill Sphere ~115. Safe orbit < 57.
-    // Orbit radius = 45.0.
-    // v_orbit = sqrt(200*500/45) = 47.14
-    // Pos = 450 + 45 = 495
-    // Vel = 68.3 + 47.14 = 115.44
-    bodies[4] = (Body){
-        .position = { 495.0f, 0.0f, 0.0f },
-        .velocity = { 0.0f, 0.0f, 115.44f },
-        .mass = 1.0f,
-        .radius = 4.0f,
-        .color = WHITE,
-        .active = true
-    };
+    bodies[2] = createOrbitingBody(bodies[0], 500.0f, 0.0f, 8.0f, 8.0f, RED);
+    
+    // Planet 3 (Orange)
+    bodies[3] = createOrbitingBody(bodies[0], 850.0f, 0.0f, 500.0f, 20.0f, ORANGE);
+    
+    // Moon of Planet 3
+    bodies[4] = createOrbitingBody(bodies[3], 45.0f, 0.0f, 1.0f, 4.0f, WHITE);
 
     for (int i = 0; i < MAX_BODIES; i++) {
         for (int j = 0; j < TRAIL_LENGTH; j++) {
@@ -483,6 +493,218 @@ int findParentBody(Body bodies[], int subjectIndex) {
         }
     }
     return bestParent;
+}
+
+void drawOrbitEditor(Body bodies[], int targetIndex, int screenWidth, int screenHeight) {
+    if (targetIndex == 0 || !bodies[targetIndex].active) return;
+    
+    int parentIndex = findParentBody(bodies, targetIndex);
+    if (parentIndex == -1) return; 
+    
+    Body *b = &bodies[targetIndex];
+    Body *p = &bodies[parentIndex];
+    
+    // Calculate relative state
+    Vector3 relPos = Vector3Subtract(b->position, p->position);
+    Vector3 relVel = Vector3Subtract(b->velocity, p->velocity);
+    
+    float dist = Vector3Length(relPos);
+    float speed = Vector3Length(relVel);
+    float mu = G * (p->mass + b->mass);
+
+    // Calculate orbital elements
+    Vector3 hVec = Vector3CrossProduct(relPos, relVel);
+    float h = Vector3Length(hVec);
+    Vector3 n = Vector3Scale(hVec, 1.0f/h);
+    
+    Vector3 vxh = Vector3CrossProduct(relVel, hVec);
+    Vector3 eVec = Vector3Subtract(Vector3Scale(vxh, 1.0f/mu), Vector3Scale(relPos, 1.0f/dist));
+    float e = Vector3Length(eVec);
+    
+    // Handle circular orbits (e ~ 0)
+    Vector3 eDir;
+    if (e < 1e-4f) {
+        e = 0.0f;
+        eDir = Vector3Normalize(relPos); 
+    } else {
+        eDir = Vector3Normalize(eVec);
+    }
+    
+    Vector3 qDir = Vector3CrossProduct(n, eDir);
+    
+    float energy = speed*speed/2.0f - mu/dist;
+    float a = -mu / (2.0f * energy);
+    
+    // True Anomaly nu
+    float nu = atan2f(Vector3DotProduct(relPos, qDir), Vector3DotProduct(relPos, eDir));
+
+    // Calculate Angle (Argument of Periapsis relative to reference)
+    Vector3 worldUp = {0, 1, 0};
+    if (fabsf(n.y) > 0.95f) worldUp = (Vector3){1, 0, 0};
+    Vector3 u = Vector3Normalize(Vector3CrossProduct(worldUp, n));
+    Vector3 v = Vector3CrossProduct(n, u);
+    float angle = atan2f(Vector3DotProduct(eDir, v), Vector3DotProduct(eDir, u));
+    if (angle < 0) angle += 2*PI;
+
+    // Calculate Inclination
+    Vector3 refNormal = {0, 1, 0};
+    float inclination = acosf(Vector3DotProduct(n, refNormal));
+    Vector3 nodeVec = Vector3CrossProduct(refNormal, n);
+    if (Vector3Length(nodeVec) < 0.001f) nodeVec = (Vector3){1, 0, 0};
+    nodeVec = Vector3Normalize(nodeVec);
+
+    // Derived parameters
+    float r_peri = a * (1.0f - e);
+    float r_apo = a * (1.0f + e);
+    float period = 2.0f * PI * sqrtf(powf(a, 3.0f) / mu);
+
+    // UI Layout
+    int uiWidth = 280;
+    int uiHeight = 400; // Increased height
+    int uiX = screenWidth - uiWidth - 10;
+    int uiY = screenHeight - uiHeight - 10;
+    Rectangle uiRect = { uiX, uiY, uiWidth, uiHeight };
+    
+    DrawRectangleRec(uiRect, Fade(BLACK, 0.8f));
+    DrawRectangleLinesEx(uiRect, 1, DARKGRAY);
+    
+    int startX = uiX + 10;
+    int startY = uiY + 10;
+    
+    DrawText("ORBIT EDITOR", startX, startY, 20, WHITE);
+    startY += 30;
+    
+    // Info
+    DrawText(TextFormat("Period: %.1f s", period), startX, startY, 10, YELLOW);
+    startY += 20;
+
+    // Helper to apply changes
+    float new_a = a;
+    float new_e = e;
+    float new_angle = angle;
+    float new_inclination = inclination;
+    bool changed = false;
+
+    // 1. Eccentricity
+    DrawText(TextFormat("Eccentricity: %.3f", e), startX, startY, 10, LIGHTGRAY);
+    Rectangle eRect = { startX, startY + 15, 260, 20 };
+    DrawRectangleRec(eRect, DARKGRAY);
+    DrawRectangle(eRect.x, eRect.y, e * eRect.width, eRect.height, ORANGE);
+    if (CheckCollisionPointRec(GetMousePosition(), eRect) && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+        float val = (GetMouseX() - eRect.x) / eRect.width;
+        if (val < 0.0f) val = 0.0f;
+        if (val > 0.95f) val = 0.95f;
+        new_e = val;
+        changed = true;
+    }
+    startY += 45;
+
+    // 2. Semi-major Axis
+    DrawText(TextFormat("Semi-major Axis: %.1f", a), startX, startY, 10, LIGHTGRAY);
+    Rectangle aRect = { startX, startY + 15, 260, 20 };
+    DrawRectangleRec(aRect, DARKGRAY);
+    float normA = a / 1000.0f;
+    if (normA > 1.0f) normA = 1.0f;
+    DrawRectangle(aRect.x, aRect.y, normA * aRect.width, aRect.height, BLUE);
+    if (CheckCollisionPointRec(GetMousePosition(), aRect) && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+        float val = (GetMouseX() - aRect.x) / aRect.width;
+        new_a = val * 1000.0f;
+        if (new_a < 20.0f) new_a = 20.0f;
+        changed = true;
+    }
+    startY += 45;
+
+    // 3. Periapsis
+    DrawText(TextFormat("Periapsis: %.1f", r_peri), startX, startY, 10, GREEN);
+    Rectangle pRect = { startX, startY + 15, 260, 20 };
+    DrawRectangleRec(pRect, DARKGRAY);
+    float normP = r_peri / 1000.0f;
+    if (normP > 1.0f) normP = 1.0f;
+    DrawRectangle(pRect.x, pRect.y, normP * pRect.width, pRect.height, GREEN);
+    if (CheckCollisionPointRec(GetMousePosition(), pRect) && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+        float val = (GetMouseX() - pRect.x) / pRect.width;
+        float new_p = val * 1000.0f;
+        if (new_p < 10.0f) new_p = 10.0f;
+        if (new_p >= r_apo) new_p = r_apo - 1.0f; // Clamp
+        
+        new_a = (new_p + r_apo) / 2.0f;
+        new_e = (r_apo - new_p) / (r_apo + new_p);
+        changed = true;
+    }
+    startY += 45;
+
+    // 4. Apoapsis
+    DrawText(TextFormat("Apoapsis: %.1f", r_apo), startX, startY, 10, RED);
+    Rectangle apRect = { startX, startY + 15, 260, 20 };
+    DrawRectangleRec(apRect, DARKGRAY);
+    float normAp = r_apo / 1000.0f;
+    if (normAp > 1.0f) normAp = 1.0f;
+    DrawRectangle(apRect.x, apRect.y, normAp * apRect.width, apRect.height, RED);
+    if (CheckCollisionPointRec(GetMousePosition(), apRect) && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+        float val = (GetMouseX() - apRect.x) / apRect.width;
+        float new_ap = val * 1000.0f;
+        if (new_ap <= r_peri) new_ap = r_peri + 1.0f; // Clamp
+        
+        new_a = (r_peri + new_ap) / 2.0f;
+        new_e = (new_ap - r_peri) / (new_ap + r_peri);
+        changed = true;
+    }
+    startY += 45;
+
+    // 5. Rotation (Arg. Periapsis)
+    DrawText(TextFormat("Rotation: %.0f deg", angle * RAD2DEG), startX, startY, 10, PURPLE);
+    Rectangle angRect = { startX, startY + 15, 260, 20 };
+    DrawRectangleRec(angRect, DARKGRAY);
+    float normAng = angle / (2*PI);
+    DrawRectangle(angRect.x, angRect.y, normAng * angRect.width, angRect.height, PURPLE);
+    if (CheckCollisionPointRec(GetMousePosition(), angRect) && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+        float val = (GetMouseX() - angRect.x) / angRect.width;
+        new_angle = val * 2 * PI;
+        changed = true;
+    }
+    startY += 45;
+
+    // 6. Inclination
+    DrawText(TextFormat("Inclination: %.0f deg", inclination * RAD2DEG), startX, startY, 10, MAGENTA);
+    Rectangle incRect = { startX, startY + 15, 260, 20 };
+    DrawRectangleRec(incRect, DARKGRAY);
+    float normInc = inclination / PI; // 0 to 180
+    DrawRectangle(incRect.x, incRect.y, normInc * incRect.width, incRect.height, MAGENTA);
+    if (CheckCollisionPointRec(GetMousePosition(), incRect) && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+        float val = (GetMouseX() - incRect.x) / incRect.width;
+        new_inclination = val * PI;
+        changed = true;
+    }
+    startY += 45;
+
+    if (changed) {
+        // Reconstruct vectors
+        Vector3 new_eDir = Vector3Add(Vector3Scale(u, cosf(new_angle)), Vector3Scale(v, sinf(new_angle)));
+        Vector3 new_qDir = Vector3CrossProduct(n, new_eDir);
+        
+        float slr = new_a * (1.0f - new_e * new_e);
+        float new_r = slr / (1.0f + new_e * cosf(nu));
+        
+        float v_radial = sqrtf(mu/slr) * new_e * sinf(nu);
+        float v_tangential = sqrtf(mu/slr) * (1.0f + new_e * cosf(nu));
+        
+        Vector3 r_hat = Vector3Add(Vector3Scale(new_eDir, cosf(nu)), Vector3Scale(new_qDir, sinf(nu)));
+        Vector3 t_hat = Vector3CrossProduct(n, r_hat);
+        
+        Vector3 pos = Vector3Scale(r_hat, new_r);
+        Vector3 vel = Vector3Add(Vector3Scale(r_hat, v_radial), Vector3Scale(t_hat, v_tangential));
+
+        // Apply Inclination Change
+        if (fabsf(new_inclination - inclination) > 0.001f) {
+            float deltaInc = new_inclination - inclination;
+            Quaternion q = QuaternionFromAxisAngle(nodeVec, deltaInc);
+            pos = Vector3RotateByQuaternion(pos, q);
+            vel = Vector3RotateByQuaternion(vel, q);
+        }
+
+        b->position = Vector3Add(p->position, pos);
+        b->velocity = Vector3Add(p->velocity, vel);
+    }
 }
 
 int main(void)
@@ -819,6 +1041,10 @@ int main(void)
         EndMode3D();
         
         // UI and 2D Overlays
+        if (cameraTargetIndex != 0 && currentState == STATE_SIMULATION) {
+            drawOrbitEditor(bodies, cameraTargetIndex, screenWidth, screenHeight);
+        }
+
         if (creationMode && currentState == STATE_SIMULATION) {
             int uiWidth = 280;
             int uiHeight = 200;
