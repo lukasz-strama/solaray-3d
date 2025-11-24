@@ -4,6 +4,12 @@
 #include <math.h>
 #include <stdio.h>
 
+#define RAYGUI_IMPLEMENTATION
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#include <raygui.h>
+#pragma GCC diagnostic pop
+
 #define G 200.0f // Gravitational constant
 #define C_SPEED 1000.0f // Speed of light approximation
 #define MAX_BODIES 500
@@ -524,7 +530,7 @@ int findParentBody(Body bodies[], int subjectIndex) {
     return bestParent;
 }
 
-void drawOrbitEditor(Body bodies[], int targetIndex, int screenWidth, int screenHeight) {
+void drawOrbitEditor(Body bodies[], int targetIndex, int screenWidth, int screenHeight, SimulationState *state) {
     if (targetIndex == 0 || !bodies[targetIndex].active) return;
 
     int parentIndex = findParentBody(bodies, targetIndex);
@@ -588,23 +594,21 @@ void drawOrbitEditor(Body bodies[], int targetIndex, int screenWidth, int screen
     float period = 2.0f * PI * sqrtf(powf(a, 3.0f) / mu);
 
     // UI Layout
-    int uiWidth = 280;
-    int uiHeight = 400; // Increased height
+    int uiWidth = 240;
+    int uiHeight = 360;
     int uiX = screenWidth - uiWidth - 10;
     int uiY = screenHeight - uiHeight - 10;
     Rectangle uiRect = { uiX, uiY, uiWidth, uiHeight };
 
-    DrawRectangleRec(uiRect, Fade(BLACK, 0.8f));
-    DrawRectangleLinesEx(uiRect, 1, DARKGRAY);
+    if (GuiWindowBox(uiRect, "ORBIT EDITOR")) {
+        state->cameraTargetIndex = 0;
+    }
 
     int startX = uiX + 10;
-    int startY = uiY + 10;
-
-    DrawText("ORBIT EDITOR", startX, startY, 20, WHITE);
-    startY += 30;
+    int startY = uiY + 30;
 
     // Info
-    DrawText(TextFormat("Period: %.1f s", period), startX, startY, 10, YELLOW);
+    GuiLabel((Rectangle){startX, startY, 260, 20}, TextFormat("Period: %.1f s", period));
     startY += 20;
 
     // Helper to apply changes
@@ -615,96 +619,74 @@ void drawOrbitEditor(Body bodies[], int targetIndex, int screenWidth, int screen
     bool changed = false;
 
     // 1. Eccentricity
-    DrawText(TextFormat("Eccentricity: %.3f", e), startX, startY, 10, LIGHTGRAY);
-    Rectangle eRect = { startX, startY + 15, 260, 20 };
-    DrawRectangleRec(eRect, DARKGRAY);
-    DrawRectangle(eRect.x, eRect.y, e * eRect.width, eRect.height, ORANGE);
-    if (CheckCollisionPointRec(GetMousePosition(), eRect) && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
-        float val = (GetMouseX() - eRect.x) / eRect.width;
-        if (val < 0.0f) val = 0.0f;
-        if (val > 0.95f) val = 0.95f;
-        new_e = val;
-        changed = true;
-    }
-    startY += 45;
+    GuiLabel((Rectangle){startX, startY, 260, 20}, TextFormat("Eccentricity: %.3f", e));
+    startY += 20;
+    float temp_e = new_e;
+    GuiSlider((Rectangle){startX, startY, 200, 20}, NULL, NULL, &temp_e, 0.0f, 0.95f);
+    if (temp_e != new_e) { new_e = temp_e; changed = true; }
+    startY += 30;
 
     // 2. Semi-major Axis
-    DrawText(TextFormat("Semi-major Axis: %.1f", a), startX, startY, 10, LIGHTGRAY);
-    Rectangle aRect = { startX, startY + 15, 260, 20 };
-    DrawRectangleRec(aRect, DARKGRAY);
-    float normA = a / 1000.0f;
-    if (normA > 1.0f) normA = 1.0f;
-    DrawRectangle(aRect.x, aRect.y, normA * aRect.width, aRect.height, BLUE);
-    if (CheckCollisionPointRec(GetMousePosition(), aRect) && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
-        float val = (GetMouseX() - aRect.x) / aRect.width;
-        new_a = val * 1000.0f;
-        if (new_a < 20.0f) new_a = 20.0f;
-        changed = true;
-    }
-    startY += 45;
+    GuiLabel((Rectangle){startX, startY, 260, 20}, TextFormat("Semi-major Axis: %.1f", a));
+    startY += 20;
+    float temp_a = new_a;
+    GuiSlider((Rectangle){startX, startY, 200, 20}, NULL, NULL, &temp_a, 20.0f, 1000.0f);
+    if (temp_a != new_a) { new_a = temp_a; changed = true; }
+    startY += 30;
 
     // 3. Periapsis
-    DrawText(TextFormat("Periapsis: %.1f", r_peri), startX, startY, 10, GREEN);
-    Rectangle pRect = { startX, startY + 15, 260, 20 };
-    DrawRectangleRec(pRect, DARKGRAY);
-    float normP = r_peri / 1000.0f;
-    if (normP > 1.0f) normP = 1.0f;
-    DrawRectangle(pRect.x, pRect.y, normP * pRect.width, pRect.height, GREEN);
-    if (CheckCollisionPointRec(GetMousePosition(), pRect) && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
-        float val = (GetMouseX() - pRect.x) / pRect.width;
-        float new_p = val * 1000.0f;
-        if (new_p < 10.0f) new_p = 10.0f;
+    GuiLabel((Rectangle){startX, startY, 260, 20}, TextFormat("Periapsis: %.1f", r_peri));
+    startY += 20;
+    float new_p = r_peri;
+    float temp_p = new_p;
+    GuiSlider((Rectangle){startX, startY, 200, 20}, NULL, NULL, &temp_p, 10.0f, 1000.0f);
+    if (temp_p != new_p) {
+        new_p = temp_p;
         if (new_p >= r_apo) new_p = r_apo - 1.0f; // Clamp
-
         new_a = (new_p + r_apo) / 2.0f;
         new_e = (r_apo - new_p) / (r_apo + new_p);
         changed = true;
     }
-    startY += 45;
+    startY += 30;
 
     // 4. Apoapsis
-    DrawText(TextFormat("Apoapsis: %.1f", r_apo), startX, startY, 10, RED);
-    Rectangle apRect = { startX, startY + 15, 260, 20 };
-    DrawRectangleRec(apRect, DARKGRAY);
-    float normAp = r_apo / 1000.0f;
-    if (normAp > 1.0f) normAp = 1.0f;
-    DrawRectangle(apRect.x, apRect.y, normAp * apRect.width, apRect.height, RED);
-    if (CheckCollisionPointRec(GetMousePosition(), apRect) && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
-        float val = (GetMouseX() - apRect.x) / apRect.width;
-        float new_ap = val * 1000.0f;
+    GuiLabel((Rectangle){startX, startY, 260, 20}, TextFormat("Apoapsis: %.1f", r_apo));
+    startY += 20;
+    float new_ap = r_apo;
+    float temp_ap = new_ap;
+    GuiSlider((Rectangle){startX, startY, 200, 20}, NULL, NULL, &temp_ap, 10.0f, 1000.0f);
+    if (temp_ap != new_ap) {
+        new_ap = temp_ap;
         if (new_ap <= r_peri) new_ap = r_peri + 1.0f; // Clamp
-
         new_a = (r_peri + new_ap) / 2.0f;
         new_e = (new_ap - r_peri) / (new_ap + r_peri);
         changed = true;
     }
-    startY += 45;
+    startY += 30;
 
     // 5. Rotation (Arg. Periapsis)
-    DrawText(TextFormat("Rotation: %.0f deg", angle * RAD2DEG), startX, startY, 10, PURPLE);
-    Rectangle angRect = { startX, startY + 15, 260, 20 };
-    DrawRectangleRec(angRect, DARKGRAY);
-    float normAng = angle / (2*PI);
-    DrawRectangle(angRect.x, angRect.y, normAng * angRect.width, angRect.height, PURPLE);
-    if (CheckCollisionPointRec(GetMousePosition(), angRect) && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
-        float val = (GetMouseX() - angRect.x) / angRect.width;
-        new_angle = val * 2 * PI;
+    GuiLabel((Rectangle){startX, startY, 260, 20}, TextFormat("Rotation: %.0f deg", angle * RAD2DEG));
+    startY += 20;
+    float angleDeg = angle * RAD2DEG;
+    float temp_angleDeg = angleDeg;
+    GuiSlider((Rectangle){startX, startY, 200, 20}, NULL, NULL, &temp_angleDeg, 0.0f, 360.0f);
+    if (temp_angleDeg != angleDeg) {
+        new_angle = temp_angleDeg * DEG2RAD;
         changed = true;
     }
-    startY += 45;
+    startY += 30;
 
     // 6. Inclination
-    DrawText(TextFormat("Inclination: %.0f deg", inclination * RAD2DEG), startX, startY, 10, MAGENTA);
-    Rectangle incRect = { startX, startY + 15, 260, 20 };
-    DrawRectangleRec(incRect, DARKGRAY);
-    float normInc = inclination / PI; // 0 to 180
-    DrawRectangle(incRect.x, incRect.y, normInc * incRect.width, incRect.height, MAGENTA);
-    if (CheckCollisionPointRec(GetMousePosition(), incRect) && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
-        float val = (GetMouseX() - incRect.x) / incRect.width;
-        new_inclination = val * PI;
+    GuiLabel((Rectangle){startX, startY, 260, 20}, TextFormat("Inclination: %.0f deg", inclination * RAD2DEG));
+    startY += 20;
+    float incDeg = inclination * RAD2DEG;
+    float temp_incDeg = incDeg;
+    GuiSlider((Rectangle){startX, startY, 200, 20}, NULL, NULL, &temp_incDeg, 0.0f, 180.0f);
+    if (temp_incDeg != incDeg) {
+        new_inclination = temp_incDeg * DEG2RAD;
         changed = true;
     }
-    startY += 45;
+    startY += 30;
 
     if (changed) {
         // Reconstruct vectors
@@ -851,7 +833,7 @@ void HandleInput(SimulationState *state, Body bodies[], int screenWidth, int scr
         }
 
         if (state->creationMode) {
-            int uiWidth = 280;
+            int uiWidth = 240;
             int uiHeight = 200;
             int uiX = screenWidth - uiWidth - 10;
             int uiY = 10;
@@ -1054,63 +1036,48 @@ void Draw3DScene(SimulationState *state, Body bodies[]) {
 // Render the 2D user interface (orbit editor, creation menu, settings)
 void DrawUI(SimulationState *state, Body bodies[], int screenWidth, int screenHeight) {
     if (state->cameraTargetIndex != 0 && state->currentState == STATE_SIMULATION) {
-        drawOrbitEditor(bodies, state->cameraTargetIndex, screenWidth, screenHeight);
+        drawOrbitEditor(bodies, state->cameraTargetIndex, screenWidth, screenHeight, state);
     }
 
     if (state->creationMode && state->currentState == STATE_SIMULATION) {
         int uiWidth = 280;
-        int uiHeight = 200;
+        int uiHeight = 210;
         int uiX = screenWidth - uiWidth - 10;
         int uiY = 10;
         Rectangle uiRect = { uiX, uiY, uiWidth, uiHeight };
 
-        DrawRectangleRec(uiRect, Fade(BLACK, 0.8f));
-        DrawRectangleLinesEx(uiRect, 1, DARKGRAY);
+        if (GuiWindowBox(uiRect, "PLANET CREATOR")) {
+            state->creationMode = false;
+        }
 
-        int startY = uiY + 10;
         int startX = uiX + 10;
+        int startY = uiY + 30;
 
-        DrawText("PLANET CREATOR", startX, startY, 20, WHITE);
+        // Mass
+        GuiLabel((Rectangle){startX, startY, 260, 20}, TextFormat("Mass: %.1f", state->newBodyMass));
+        startY += 20;
+        float tempMass = state->newBodyMass;
+        GuiSlider((Rectangle){startX, startY, 200, 20}, NULL, NULL, &tempMass, 1.0f, 100.0f);
+        state->newBodyMass = tempMass;
         startY += 30;
 
-        DrawText(TextFormat("Mass: %.1f", state->newBodyMass), startX, startY, 10, LIGHTGRAY);
-        Rectangle massRect = { startX, startY + 15, 260, 20 };
-        DrawRectangleRec(massRect, DARKGRAY);
-        DrawRectangle(massRect.x, massRect.y, (state->newBodyMass / 100.0f) * massRect.width, massRect.height, BLUE);
-        if (CheckCollisionPointRec(GetMousePosition(), massRect) && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
-            float val = (GetMouseX() - massRect.x) / massRect.width;
-            if (val < 0) val = 0;
-            if (val > 1) val = 1;
-            state->newBodyMass = val * 100.0f;
-            if (state->newBodyMass < 1.0f) state->newBodyMass = 1.0f;
-        }
-        startY += 45;
+        // Height Offset
+        GuiLabel((Rectangle){startX, startY, 260, 20}, TextFormat("Height Offset: %.1f", state->spawnHeight));
+        startY += 20;
+        float tempHeight = state->spawnHeight;
+        GuiSlider((Rectangle){startX, startY, 200, 20}, NULL, NULL, &tempHeight, -200.0f, 200.0f);
+        state->spawnHeight = tempHeight;
+        startY += 30;
 
-        DrawText(TextFormat("Height Offset: %.1f", state->spawnHeight), startX, startY, 10, LIGHTGRAY);
-        Rectangle heightRect = { startX, startY + 15, 260, 20 };
-        DrawRectangleRec(heightRect, DARKGRAY);
-        float normHeight = (state->spawnHeight + 200.0f) / 400.0f;
-        DrawRectangle(heightRect.x, heightRect.y, normHeight * heightRect.width, heightRect.height, GREEN);
-        if (CheckCollisionPointRec(GetMousePosition(), heightRect) && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
-            float val = (GetMouseX() - heightRect.x) / heightRect.width;
-            if (val < 0) val = 0;
-            if (val > 1) val = 1;
-            state->spawnHeight = (val * 400.0f) - 200.0f;
-        }
-        startY += 45;
+        // Launch Angle
+        GuiLabel((Rectangle){startX, startY, 260, 20}, TextFormat("Launch Angle: %.1f deg", state->spawnAngle));
+        startY += 20;
+        float tempAngle = state->spawnAngle;
+        GuiSlider((Rectangle){startX, startY, 200, 20}, NULL, NULL, &tempAngle, -90.0f, 90.0f);
+        state->spawnAngle = tempAngle;
+        startY += 30;
 
-        DrawText(TextFormat("Launch Angle: %.1f deg", state->spawnAngle), startX, startY, 10, LIGHTGRAY);
-        Rectangle angleRect = { startX, startY + 15, 260, 20 };
-        DrawRectangleRec(angleRect, DARKGRAY);
-        float normAngle = (state->spawnAngle + 90.0f) / 180.0f;
-        DrawRectangle(angleRect.x, angleRect.y, normAngle * angleRect.width, angleRect.height, RED);
-        if (CheckCollisionPointRec(GetMousePosition(), angleRect) && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
-            float val = (GetMouseX() - angleRect.x) / angleRect.width;
-            state->spawnAngle = (val * 180.0f) - 90.0f;
-        }
-
-        startY += 40;
-        DrawText("Click & Drag in space to launch", startX, startY, 10, GRAY);
+        GuiLabel((Rectangle){startX, startY, 260, 20}, "Click & Drag in space to launch");
     }
 
     if (state->currentState == STATE_SIMULATION) {
@@ -1177,11 +1144,10 @@ void DrawUI(SimulationState *state, Body bodies[], int screenWidth, int screenHe
     DrawText(state->creationMode ? "ON" : "OFF", x, statusY, 20, state->creationMode ? GREEN : RED);
 
     x += MeasureText("ON ", 20) + 20;
-    Rectangle btnRel = { x, statusY - 2, 140, 24 };
-    bool hoverRel = CheckCollisionPointRec(GetMousePosition(), btnRel);
-    DrawRectangleRec(btnRel, hoverRel ? GRAY : DARKGRAY);
-    DrawText("Rel. View", btnRel.x + 10, btnRel.y + 2, 20, state->relativeView ? GREEN : WHITE);
-    if (hoverRel && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) state->relativeView = !state->relativeView;
+    
+    if (GuiButton((Rectangle){x, statusY - 2, 100, 24}, state->relativeView ? "Rel. View: ON" : "Rel. View: OFF")) {
+        state->relativeView = !state->relativeView;
+    }
 
     if (state->creationMode && state->currentState == STATE_SIMULATION) {
         DrawText(TextFormat("Creation Mode: Click & Drag to launch. Scroll: Mass %.1f", state->newBodyMass), 10, 100, 20, YELLOW);
@@ -1194,34 +1160,13 @@ void DrawUI(SimulationState *state, Body bodies[], int screenWidth, int screenHe
 
         DrawText("PAUSED", screenWidth/2 - MeasureText("PAUSED", 40)/2, menuY - 60, 40, WHITE);
 
-        Vector2 mouse = GetMousePosition();
-
-        Rectangle btnResume = { menuX, menuY, 200, 40 };
-        bool hoverResume = CheckCollisionPointRec(mouse, btnResume);
-        DrawRectangleRec(btnResume, hoverResume ? GRAY : DARKGRAY);
-        DrawText("Resume", btnResume.x + 20, btnResume.y + 10, 20, WHITE);
-        if (hoverResume && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) state->currentState = STATE_SIMULATION;
-
-        Rectangle btnReset = { menuX, menuY + 50, 200, 40 };
-        bool hoverReset = CheckCollisionPointRec(mouse, btnReset);
-        DrawRectangleRec(btnReset, hoverReset ? GRAY : DARKGRAY);
-        DrawText("Reset", btnReset.x + 20, btnReset.y + 10, 20, WHITE);
-        if (hoverReset && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        if (GuiButton((Rectangle){menuX, menuY, 200, 40}, "Resume")) state->currentState = STATE_SIMULATION;
+        if (GuiButton((Rectangle){menuX, menuY + 50, 200, 40}, "Reset")) {
             initBodies(bodies);
             state->currentState = STATE_SIMULATION;
         }
-
-        Rectangle btnSettings = { menuX, menuY + 100, 200, 40 };
-        bool hoverSettings = CheckCollisionPointRec(mouse, btnSettings);
-        DrawRectangleRec(btnSettings, hoverSettings ? GRAY : DARKGRAY);
-        DrawText("Settings", btnSettings.x + 20, btnSettings.y + 10, 20, WHITE);
-        if (hoverSettings && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) state->currentState = STATE_SETTINGS;
-
-        Rectangle btnQuit = { menuX, menuY + 150, 200, 40 };
-        bool hoverQuit = CheckCollisionPointRec(mouse, btnQuit);
-        DrawRectangleRec(btnQuit, hoverQuit ? RED : MAROON);
-        DrawText("Quit", btnQuit.x + 20, btnQuit.y + 10, 20, WHITE);
-        if (hoverQuit && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) state->shouldExit = true;
+        if (GuiButton((Rectangle){menuX, menuY + 100, 200, 40}, "Settings")) state->currentState = STATE_SETTINGS;
+        if (GuiButton((Rectangle){menuX, menuY + 150, 200, 40}, "Quit")) state->shouldExit = true;
     }
     else if (state->currentState == STATE_SETTINGS) {
         DrawRectangle(0, 0, screenWidth, screenHeight, Fade(BLACK, 0.8f));
@@ -1229,31 +1174,12 @@ void DrawUI(SimulationState *state, Body bodies[], int screenWidth, int screenHe
         int menuY = screenHeight / 2 - 100;
 
         DrawText("SETTINGS", screenWidth/2 - MeasureText("SETTINGS", 40)/2, menuY - 60, 40, WHITE);
-        Vector2 mouse = GetMousePosition();
 
-        Rectangle btnRoche = { menuX, menuY, 300, 40 };
-        bool hoverRoche = CheckCollisionPointRec(mouse, btnRoche);
-        DrawRectangleRec(btnRoche, hoverRoche ? GRAY : DARKGRAY);
-        DrawText(TextFormat("Roche Limit: %s", state->enableRoche ? "ON" : "OFF"), btnRoche.x + 20, btnRoche.y + 10, 20, state->enableRoche ? GREEN : RED);
-        if (hoverRoche && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) state->enableRoche = !state->enableRoche;
+        GuiToggle((Rectangle){menuX, menuY, 300, 40}, "Roche Limit", &state->enableRoche);
+        GuiToggle((Rectangle){menuX, menuY + 50, 300, 40}, "Accretion Drag", &state->enableDrag);
+        GuiToggle((Rectangle){menuX, menuY + 100, 300, 40}, "Lagrange Points", &state->showLagrange);
 
-        Rectangle btnDrag = { menuX, menuY + 50, 300, 40 };
-        bool hoverDrag = CheckCollisionPointRec(mouse, btnDrag);
-        DrawRectangleRec(btnDrag, hoverDrag ? GRAY : DARKGRAY);
-        DrawText(TextFormat("Accretion Drag: %s", state->enableDrag ? "ON" : "OFF"), btnDrag.x + 20, btnDrag.y + 10, 20, state->enableDrag ? GREEN : RED);
-        if (hoverDrag && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) state->enableDrag = !state->enableDrag;
-
-        Rectangle btnLag = { menuX, menuY + 100, 300, 40 };
-        bool hoverLag = CheckCollisionPointRec(mouse, btnLag);
-        DrawRectangleRec(btnLag, hoverLag ? GRAY : DARKGRAY);
-        DrawText(TextFormat("Lagrange Points: %s", state->showLagrange ? "ON" : "OFF"), btnLag.x + 20, btnLag.y + 10, 20, state->showLagrange ? GREEN : RED);
-        if (hoverLag && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) state->showLagrange = !state->showLagrange;
-
-        Rectangle btnBack = { menuX, menuY + 160, 300, 40 };
-        bool hoverBack = CheckCollisionPointRec(mouse, btnBack);
-        DrawRectangleRec(btnBack, hoverBack ? GRAY : DARKGRAY);
-        DrawText("Back", btnBack.x + 120, btnBack.y + 10, 20, WHITE);
-        if (hoverBack && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) state->currentState = STATE_MENU;
+        if (GuiButton((Rectangle){menuX, menuY + 160, 300, 40}, "Back")) state->currentState = STATE_MENU;
     }
 }
 
